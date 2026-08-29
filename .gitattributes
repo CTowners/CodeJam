@@ -1,0 +1,17 @@
+# Normalize every text file to LF in the repository and on checkout.
+# Without this, a Windows teammate's CRLF working tree shows every file as
+# modified on a Mac or Linux machine, which makes diffs and merges unreviewable.
+* text=auto eol=lf
+
+# These MUST be LF regardless of platform: a CRLF shebang fails inside the
+# Linux runtime container with "bad interpreter: /usr/bin/env bash^M".
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+Dockerfile.*  text eol=lf
+
+# Binary assets: never convert.
+*.jpg binary
+*.png binary
+
+# Collapse the lockfile by default in GitHub pull request diffs.
+package-lock.json linguist-generated=true
