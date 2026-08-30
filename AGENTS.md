@@ -108,16 +108,24 @@ next pull. Whoever touches this, announce it before you merge.
 
 ## 5. File ownership
 
-> **TBD — fill in after the Day 1 direction call.**
-> The split depends on which middleware story we choose, so this stays empty until
-> then. Shape it will take:
+Three people. Direction: **multi-Agent coordination** — a standing team of role-based
+Agents, orchestrated by a plain-code Coordinator. See `apps/server/src/contracts.ts`
+for the shared vocabulary; everything below is built against those types.
 
-| Person | Owns | Deliverable |
+| Person | Owns | Builds |
 |---|---|---|
-| _TBD_ | `types.ts` / new `contracts.ts`, `agent-service.ts`, `runner-factory.ts` | The seam and integration. One person only on the contended file. |
-| _TBD_ | `app.ts`, new module directory | Request-boundary work. |
-| _TBD_ | `store.ts`, new module directory, routes as a Fastify plugin | Data and query layer. |
-| _TBD_ | all of `apps/web/src/`, `README.md`, `.github/` | UI, demo script, docs. |
+| **Ron** (spine) | `contracts.ts`, `types.ts`, `store.ts`, `agent-service.ts`, `workspace.ts`, `app.ts` | Shared types. Store v2 + migration. `runTurn()` (send-and-wait) and `resetMemory()` on AgentService. The file courier — copy `needs` in before a turn, `produces` out after. Registers others' route plugins. Integration and merges. |
+| **_name_** (coordinator) | `coordinator/` *(new dir)* and its tests | The Coordinator loop: turn order, reply checks against `replyPattern`, verifying `produces` files appeared, timeout, retry, halt. Plan validation and conflict detection. Parallel scheduling for independent steps. |
+| **_name_** (surface) | `job-routes.ts` *(new)*, all `apps/web/src/`, `README.md`, `.github/` | Routes as a Fastify plugin Ron mounts in one line. Job screen: pick the cast, type a task, watch the transcript fill in with per-Agent attribution. README, architecture diagram, demo script. |
+
+**Build the Coordinator against a fake `TurnRunner`.** `contracts.ts` defines it as an
+injected interface precisely so the entire Coordinator can be unit tested with canned
+replies — no Ark key, no Docker, milliseconds per test. That work is unblocked the
+moment `contracts.ts` lands, and it is where most of the verification score lives.
+
+**No shared mount is needed.** We chose the courier model over a common `/shared`
+directory, so Agent workspaces stay sealed and `container-codex-runner.ts` is untouched.
+Isolation is a property of the filesystem rather than a promise about behaviour.
 
 We assign **files, not features.** Coding agents do not respect the module boundaries
 in our heads — ask one to "add audit logging" and it will happily refactor
