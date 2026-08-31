@@ -281,6 +281,7 @@ docker compose config
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE.md)
+- [Demo runbook](docs/DEMO.md)
 - [Local POC](docs/LOCAL_POC.md)
 - [Deployment](docs/DEPLOYMENT.md)
 - [Hackathon extension guide](docs/HACKATHON_EXTENSION_GUIDE.md)
