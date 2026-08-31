@@ -8,9 +8,47 @@ Run it locally with Docker, Colima, or rootless Podman, or deploy it to
 Volcengine ECS.
 
 > [!WARNING]
-> This is a single-user proof of concept. It intentionally has no identity,
-> tracing, audit, or hardened sandbox middleware. Do not use production data or
-> credentials. See [SECURITY.md](SECURITY.md).
+> This is a single-user proof of concept. Beyond the multi-agent coordination
+> middleware described below, it intentionally has no identity, tracing, audit,
+> or hardened sandbox middleware. Do not use production data or credentials.
+> See [SECURITY.md](SECURITY.md).
+
+## Multi-agent coordination middleware
+
+On top of the baseline Agent platform, this repo adds a coordination layer for
+running a task across several specialist Agents instead of one at a time.
+
+**The problem:** coordinating multiple Agents on one task is normally manual —
+a human plays project manager, prompting each Agent in sequence, copying one
+Agent's output into another's context by hand, with no shared plan and no way
+to tell a transient hiccup from a genuine dead end.
+
+**The design, in short:** an **Orchestrator** drafts a Plan (ordered,
+dependency-aware steps) for a submitted task and casts a specialist Agent for
+each step by matching it against every Agent's `capabilitySummary` — a field
+auto-derived from that Agent's `instructions`, not hand-typed. A human reviews
+and approves the Plan before anything runs. A **Coordinator** then executes
+it deterministically: real files move between Agents' sealed workspaces
+through a per-Job staging area (`needs` copied in before a turn, `produces`
+verified and copied out after), and a failed turn is classified by cause —
+transient, validation, auth, or cancelled — with a different retry-or-halt
+response for each, never a single flat retry count.
+
+Full design detail, the exact failure-handling table, and known limitations
+live in [AGENTS.md §5](AGENTS.md#5-architecture--orchestrator-and-coordinator)
+and the middleware section of
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#coordination-middleware).
+
+**Try it:** after starting the POC (below), open the **Jobs** tab next to
+Playground, describe a task, review the drafted plan and cast, approve it,
+and watch the steps execute with per-Agent attribution in the transcript and
+event log.
+
+**Known limitation:** revising a drafted plan's structure by chat, and
+reassigning a step's cast via a picker, are both named in the design but not
+yet wired up in this build — the draft screen is approve-or-discard-and-redraft
+only, and says so in its own copy rather than silently offering controls that
+don't work.
 
 ## Screenshots
 
@@ -30,6 +68,9 @@ Volcengine ECS.
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
+- Multi-agent coordination: an Orchestrator drafts and casts a Plan across
+  several Agents, a Coordinator executes it with real file exchange and
+  cause-based failure handling — see above
 
 ## Requirements
 
