@@ -16,6 +16,7 @@ const runner = createRunner(config);
 const service = new AgentService(config, store, workspaces, runner);
 await service.initialize();
 const jobService = new JobService(config, store, service);
+await jobService.initialize();
 
 const app = await createApp(config, service, jobService);
 

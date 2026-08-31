@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DraftedPlan } from "../contracts.js";
+import { HttpError } from "../errors.js";
 import { FakePlanDrafter } from "./fake-plan-drafter.js";
 import type { AgentCreator } from "./materialize.js";
 import { Orchestrator, OrchestratorDraftError } from "./orchestrator.js";
@@ -59,18 +60,31 @@ describe("Orchestrator.draftPlan", () => {
     await expect(orchestrator.draftPlan("do the thing", [])).rejects.toThrow(OrchestratorDraftError);
     expect(drafter.calls).toHaveLength(2);
   });
+
+  it("fails fast with a clean HttpError, without retrying, when the drafting turn itself fails", async () => {
+    const drafter = new FakePlanDrafter(async () => {
+      throw new Error("Plan drafting turn failed: This Agent is stopped");
+    });
+    const orchestrator = new Orchestrator(drafter);
+
+    const rejection = orchestrator.draftPlan("do the thing", []);
+    await expect(rejection).rejects.toThrow(HttpError);
+    await expect(rejection).rejects.toThrow(/This Agent is stopped/);
+    // A stopped Agent won't un-stop itself between attempts — retrying blindly
+    // would just fail the same way twice for no benefit, so this must not retry.
+    expect(drafter.calls).toHaveLength(1);
+  });
 });
 
 describe("Orchestrator.approve", () => {
-  it("passes an \"existing\" cast proposal through unchanged, without creating an Agent", async () => {
-    const orchestrator = new Orchestrator(new FakePlanDrafter());
+  it("is static (no PlanDrafter/instance needed) and passes an \"existing\" cast proposal through unchanged", async () => {
     const creator: AgentCreator = {
       createAgent: async () => {
         throw new Error("should not be called");
       },
     };
 
-    const job = await orchestrator.approve("My Job", "do the thing", validDraft, creator);
+    const job = await Orchestrator.approve("My Job", "do the thing", validDraft, creator);
 
     expect(job.castByRole.implementer).toBe("agent-1");
     expect(job.status).toBe("pending");
@@ -92,8 +106,7 @@ describe("Orchestrator.approve", () => {
       },
     };
 
-    const orchestrator = new Orchestrator(new FakePlanDrafter());
-    const job = await orchestrator.approve("My Job", "do the thing", draftWithNewAgent, creator);
+    const job = await Orchestrator.approve("My Job", "do the thing", draftWithNewAgent, creator);
 
     expect(created).toEqual([{ name: "Fresh Agent", instructions: "be fresh" }]);
     expect(job.castByRole.implementer).toBe("new-agent-id");

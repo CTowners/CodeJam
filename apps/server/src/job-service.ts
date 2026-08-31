@@ -7,10 +7,10 @@ import type { AppConfig } from "./config.js";
 import type { CoordinationEvent, DraftedPlan, Job, JobMessage } from "./contracts.js";
 import { COORDINATION_LIMITS } from "./contracts.js";
 import { HttpError } from "./errors.js";
-import { buildJobFromDraft, materializeCast } from "./orchestrator/materialize.js";
 import { ModelPlanDrafter } from "./orchestrator/model-plan-drafter.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import type { JsonStore } from "./store.js";
+import type { Database } from "./types.js";
 
 const ORCHESTRATOR_AGENT_NAME = "Orchestrator";
 const ORCHESTRATOR_INSTRUCTIONS = [
@@ -30,6 +30,10 @@ export interface JobDraft {
 
 const now = () => new Date().toISOString();
 
+const logFailure = (context: string, error: unknown): void => {
+  console.error(`[JobService] ${context}:`, error);
+};
+
 /**
  * Owns the Job lifecycle: draft (Orchestrator) -> approve (materialize + persist)
  * -> run (Coordinator) -> cancel. Drafts are in-memory only — nothing is committed
@@ -38,14 +42,50 @@ const now = () => new Date().toISOString();
  */
 export class JobService {
   private readonly drafts = new Map<string, JobDraft>();
-  private readonly runningJobs = new Map<string, { requestCancel: () => void }>();
-  private orchestratorAgentId: string | null = null;
+  /** jobId -> cancel handle, populated once a Job's Job row (and id) exists. */
+  private readonly cancelHandles = new Map<string, () => void>();
+  /**
+   * The one-Job-at-a-time gate. Reserved synchronously in approveDraft, before
+   * any await — the same atomic check-and-flip AgentService.runTurn uses for its
+   * own busy check, so two approvals fired close together can't both pass the
+   * check before either reserves its slot.
+   */
+  private runningCount = 0;
+  /**
+   * Memoized in-flight promise, not just the resolved id: two concurrent
+   * draftJob() calls before the Orchestrator Agent exists yet must share the
+   * same creation attempt, or both can independently decide it's missing and
+   * each create their own.
+   */
+  private orchestratorAgentIdPromise: Promise<string> | null = null;
 
   constructor(
     private readonly config: AppConfig,
     private readonly store: JsonStore,
     private readonly agents: AgentService,
   ) {}
+
+  /** Reconciles Jobs left "pending"/"running" by a server crash — mirrors AgentService.initialize(). */
+  async initialize(): Promise<void> {
+    await this.store.mutate((database) => {
+      for (const job of database.jobs) {
+        if (job.status === "pending" || job.status === "running") {
+          job.status = "halted";
+          job.haltedReason = "Server restarted while this Job was active";
+          database.events.push({
+            id: randomUUID(),
+            jobId: job.id,
+            type: "job_halted",
+            stepId: null,
+            agentId: null,
+            turn: job.cursor,
+            detail: job.haltedReason,
+            createdAt: now(),
+          });
+        }
+      }
+    });
+  }
 
   listJobs(): Job[] {
     return this.store.snapshot().jobs.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
@@ -98,19 +138,27 @@ export class JobService {
   }
 
   async approveDraft(draftId: string): Promise<Job> {
-    if (this.runningJobs.size >= COORDINATION_LIMITS.maxConcurrentJobs) {
+    if (this.runningCount >= COORDINATION_LIMITS.maxConcurrentJobs) {
       throw new HttpError(409, "A Job is already running — only one runs at a time");
     }
-    const pending = this.getDraft(draftId);
-    const castByRole = await materializeCast(pending.draft, this.agents);
-    const job = buildJobFromDraft(pending.name, pending.task, pending.draft, castByRole);
+    // Reserve the slot now, synchronously, before any await below — this is the
+    // whole fix: nothing here can interleave with another approveDraft() call
+    // until we actually yield, so the check-then-reserve above is atomic.
+    this.runningCount += 1;
+    try {
+      const pending = this.getDraft(draftId);
+      const job = await Orchestrator.approve(pending.name, pending.task, pending.draft, this.agents);
 
-    await this.store.mutate((database) => {
-      database.jobs.push(job);
-    });
-    this.drafts.delete(draftId);
-    this.startRun(job);
-    return job;
+      await this.store.mutate((database) => {
+        database.jobs.push(job);
+      });
+      this.drafts.delete(draftId);
+      this.startRun(job);
+      return job;
+    } catch (error) {
+      this.runningCount -= 1; // never actually started a run — release the slot
+      throw error;
+    }
   }
 
   /**
@@ -120,9 +168,9 @@ export class JobService {
    * what can actually cut an in-flight turn short, on its own timeout).
    */
   async cancelJob(jobId: string): Promise<Job> {
-    const running = this.runningJobs.get(jobId);
-    if (running) {
-      running.requestCancel();
+    const cancel = this.cancelHandles.get(jobId);
+    if (cancel) {
+      cancel();
     }
     return this.getJob(jobId);
   }
@@ -131,7 +179,15 @@ export class JobService {
     const stagingDir = path.join(this.config.dataDirectory, "jobs", job.id, "staging");
     const courier = new FileCourier(stagingDir);
     let cancelRequested = false;
-    this.runningJobs.set(job.id, { requestCancel: () => (cancelRequested = true) });
+    this.cancelHandles.set(job.id, () => (cancelRequested = true));
+
+    // Every store write here is fire-and-forget from the Coordinator's side (it
+    // doesn't await these callbacks) — each one gets its own .catch() so a
+    // transient disk error logs instead of becoming an unhandled rejection that
+    // takes down the whole process.
+    const persist = (mutation: (database: Database) => void): void => {
+      this.store.mutate(mutation).catch((error) => logFailure(`failed to persist an update for Job ${job.id}`, error));
+    };
 
     const coordinator = new Coordinator(
       {
@@ -141,36 +197,71 @@ export class JobService {
       },
       {
         shouldCancel: () => cancelRequested,
-        onEvent: (event) => void this.store.mutate((database) => database.events.push(event)),
-        onMessage: (message) => void this.store.mutate((database) => database.jobMessages.push(message)),
+        onEvent: (event) => persist((database) => void database.events.push(event)),
+        onMessage: (message) => persist((database) => void database.jobMessages.push(message)),
         onJobUpdate: (updated) =>
-          void this.store.mutate((database) => {
+          persist((database) => {
             const index = database.jobs.findIndex((item) => item.id === updated.id);
             if (index >= 0) database.jobs[index] = structuredClone(updated);
           }),
       },
     );
 
-    void coordinator.run(job).finally(() => {
-      this.runningJobs.delete(job.id);
-    });
+    coordinator
+      .run(job)
+      .catch((error) => {
+        // Coordinator.run() is hardened to classify failures rather than throw,
+        // but if something still escapes it (a bug, an OOM, whatever), a Job
+        // must never stay stuck "running" forever with no explanation.
+        logFailure(`Coordinator crashed for Job ${job.id}`, error);
+        const haltedReason = `Coordinator crashed: ${error instanceof Error ? error.message : String(error)}`;
+        return this.store
+          .mutate((database) => {
+            const stored = database.jobs.find((item) => item.id === job.id);
+            if (stored && (stored.status === "pending" || stored.status === "running")) {
+              stored.status = "halted";
+              stored.haltedReason = haltedReason;
+              database.events.push({
+                id: randomUUID(),
+                jobId: job.id,
+                type: "job_halted",
+                stepId: null,
+                agentId: null,
+                turn: stored.cursor,
+                detail: haltedReason,
+                createdAt: now(),
+              });
+            }
+          })
+          .catch((persistError) => logFailure(`failed to persist crash-halt for Job ${job.id}`, persistError));
+      })
+      .finally(() => {
+        this.cancelHandles.delete(job.id);
+        this.runningCount -= 1;
+      });
   }
 
-  private async getOrchestratorAgentId(): Promise<string> {
-    if (this.orchestratorAgentId) {
-      return this.orchestratorAgentId;
+  private getOrchestratorAgentId(): Promise<string> {
+    if (!this.orchestratorAgentIdPromise) {
+      this.orchestratorAgentIdPromise = (async () => {
+        const existing = this.agents.listAgents().find((agent) => agent.name === ORCHESTRATOR_AGENT_NAME);
+        if (existing) return existing.id;
+        const created = await this.agents.createAgent({
+          name: ORCHESTRATOR_AGENT_NAME,
+          description: "System Agent that drafts Plans for Jobs. Created automatically — do not delete.",
+          instructions: ORCHESTRATOR_INSTRUCTIONS,
+        });
+        return created.id;
+      })().catch((error: unknown) => {
+        // A rejected promise is still a settled promise — left in place, every
+        // future draftJob() call would reuse and re-await this same permanent
+        // failure. Clear it so a transient creation failure (disk, workspace I/O)
+        // gets a fresh attempt next time instead of poisoning the feature until
+        // a server restart.
+        this.orchestratorAgentIdPromise = null;
+        throw error;
+      });
     }
-    const existing = this.agents.listAgents().find((agent) => agent.name === ORCHESTRATOR_AGENT_NAME);
-    if (existing) {
-      this.orchestratorAgentId = existing.id;
-      return existing.id;
-    }
-    const created = await this.agents.createAgent({
-      name: ORCHESTRATOR_AGENT_NAME,
-      description: "System Agent that drafts Plans for Jobs. Created automatically — do not delete.",
-      instructions: ORCHESTRATOR_INSTRUCTIONS,
-    });
-    this.orchestratorAgentId = created.id;
-    return created.id;
+    return this.orchestratorAgentIdPromise;
   }
 }

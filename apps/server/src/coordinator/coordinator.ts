@@ -11,7 +11,7 @@ import type {
 import { COORDINATION_LIMITS } from "../contracts.js";
 import { classifyFailure, isTimeout } from "./failure-classifier.js";
 import type { FileCourier } from "./file-courier.js";
-import { validatePlan } from "./plan-validation.js";
+import { sameAgentConflicts, validatePlan } from "./plan-validation.js";
 import { matchesReplyPattern } from "./reply-check.js";
 import { readySteps } from "./scheduler.js";
 
@@ -120,7 +120,10 @@ export class Coordinator {
 
     job.status = "running";
     this.onJobUpdate(job);
-    emit("job_started", null, null, null);
+    // Not fatal — the batch scheduler already serializes these — but silently
+    // losing parallelism a Plan's shape implies is worth a visible note.
+    const conflictNotes = sameAgentConflicts(plan, job.castByRole);
+    emit("job_started", null, null, conflictNotes.length > 0 ? conflictNotes.join(" ") : null);
 
     const pushMessage = (step: PlanStep, agentId: string, content: string): void => {
       const message = this.toMessage(job, step, agentId, turn, content);
@@ -134,19 +137,29 @@ export class Coordinator {
       workspaceCopies.set(agentId, set);
     };
 
+    /**
+     * A monotonic progress counter — how many Steps have reached a terminal
+     * state (completed/rejected/skipped/timeout) — not an index, since Steps
+     * can run in parallel and there's no single "current" one.
+     */
+    const finishStep = (step: PlanStep, status: StepStatus): void => {
+      stepStatus.set(step.id, status);
+      job.cursor += 1;
+      this.onJobUpdate(job);
+    };
+
     const runStep = async (step: PlanStep): Promise<void> => {
       const agentId = job.castByRole[step.role];
       if (!agentId) {
-        stepStatus.set(step.id, "rejected");
+        finishStep(step, "rejected");
         halt(`No Agent cast for role "${step.role}"`, step.id, null);
         return;
       }
-      const workspaceDir = this.deps.workspacePathForAgent(agentId);
       let attempt = 0;
 
       while (!halted) {
         if (this.shouldCancel()) {
-          stepStatus.set(step.id, "skipped");
+          finishStep(step, "skipped");
           halt("Cancelled by user", step.id, agentId);
           return;
         }
@@ -154,40 +167,54 @@ export class Coordinator {
         turn += 1;
         emit("turn_started", step.id, agentId, null);
 
-        if (step.needs.length > 0) {
-          await this.deps.courier.copyIn(step.needs, workspaceDir);
-          trackCopy(agentId, step.needs);
-          emit("files_copied_in", step.id, agentId, step.needs.join(", "));
-        }
-
-        const prompt = this.buildPrompt(step, job, messages);
-        let result;
+        // Everything from resolving the Agent's workspace through the runner
+        // turn itself is one raw-error surface: a stale/deleted Agent id, a
+        // courier copy-in failure, or the runner throwing are all just signals
+        // to classify, never a reason to let this Job's promise reject outright
+        // (that would crash whatever awaits it instead of halting cleanly).
+        let result: { ok: true; reply: string } | { ok: false; error: string };
         try {
-          result = await this.deps.runner.runTurn(agentId, prompt, COORDINATION_LIMITS.turnTimeoutMs);
+          const workspaceDir = this.deps.workspacePathForAgent(agentId);
+          if (step.needs.length > 0) {
+            await this.deps.courier.copyIn(step.needs, workspaceDir);
+            trackCopy(agentId, step.needs);
+            emit("files_copied_in", step.id, agentId, step.needs.join(", "));
+          }
+          const prompt = this.buildPrompt(step, job, messages);
+          const turnResult = await this.deps.runner.runTurn(agentId, prompt, COORDINATION_LIMITS.turnTimeoutMs);
+          result = turnResult.ok ? { ok: true, reply: turnResult.reply } : { ok: false, error: turnResult.error ?? "Unknown error" };
         } catch (error) {
-          // A misbehaving runner throwing instead of resolving is still just a
-          // raw error signal — classify it the same as an ok:false result.
-          result = { ok: false as const, reply: "", error: error instanceof Error ? error.message : String(error), durationMs: 0 };
+          result = { ok: false, error: error instanceof Error ? error.message : String(error) };
         }
 
         if (result.ok) {
-          const problem = await this.deps.courier.verifyProduces(step.produces, workspaceDir);
-          const replyOk = matchesReplyPattern(result.reply, step.replyPattern);
-          if (!problem && replyOk) {
-            if (step.produces.length > 0) {
+          // Verifying produces and copying them out can themselves fail (e.g. a
+          // courier I/O error) — fold that into the same "reason" a failed check
+          // would produce, rather than letting it escape uncaught.
+          let reason: string | null;
+          try {
+            const workspaceDir = this.deps.workspacePathForAgent(agentId);
+            const problem = await this.deps.courier.verifyProduces(step.produces, workspaceDir);
+            const replyOk = matchesReplyPattern(result.reply, step.replyPattern);
+            reason = problem ?? (replyOk ? null : `reply did not match pattern /${step.replyPattern}/`);
+            if (!reason && step.produces.length > 0) {
               await this.deps.courier.copyOut(step.produces, workspaceDir);
               emit("files_copied_out", step.id, agentId, step.produces.join(", "));
             }
+          } catch (error) {
+            reason = error instanceof Error ? error.message : String(error);
+          }
+
+          if (!reason) {
             pushMessage(step, agentId, result.reply);
             emit("turn_completed", step.id, agentId, null);
-            stepStatus.set(step.id, "completed");
+            finishStep(step, "completed");
             return;
           }
-          const reason = problem ?? `reply did not match pattern /${step.replyPattern}/`;
           pushMessage(step, agentId, result.reply);
           emit("turn_rejected", step.id, agentId, reason);
           if (attempt > COORDINATION_LIMITS.maxRetriesPerStep) {
-            stepStatus.set(step.id, "rejected");
+            finishStep(step, "rejected");
             halt(`Step "${step.id}" exhausted retries (validation): ${reason}`, step.id, agentId);
             return;
           }
@@ -195,23 +222,23 @@ export class Coordinator {
           continue;
         }
 
-        const errorMessage = result.error ?? "Unknown error";
+        const errorMessage = result.error;
         const cause = classifyFailure(errorMessage);
         emit(isTimeout(errorMessage) ? "turn_timeout" : "turn_rejected", step.id, agentId, errorMessage);
 
         if (cause === "cancelled") {
-          stepStatus.set(step.id, "skipped");
+          finishStep(step, "skipped");
           halt("Cancelled by user", step.id, agentId);
           return;
         }
         if (cause === "auth") {
-          stepStatus.set(step.id, "rejected");
+          finishStep(step, "rejected");
           halt(`Auth error on step "${step.id}": ${errorMessage}`, step.id, agentId);
           return;
         }
         // transient or validation (runner-signalled): bounded retry, backoff only for transient
         if (attempt > COORDINATION_LIMITS.maxRetriesPerStep) {
-          stepStatus.set(step.id, isTimeout(errorMessage) ? "timeout" : "rejected");
+          finishStep(step, isTimeout(errorMessage) ? "timeout" : "rejected");
           halt(`Step "${step.id}" exhausted retries (${cause}): ${errorMessage}`, step.id, agentId);
           return;
         }
@@ -282,9 +309,14 @@ export class Coordinator {
     return step.instruction;
   }
 
+  /** Best-effort: a cleanup failure (e.g. the Agent was deleted mid-Job) must never crash run() this late. */
   private async cleanupWorkspaces(workspaceCopies: Map<string, Set<string>>): Promise<void> {
     for (const [agentId, paths] of workspaceCopies) {
-      await this.deps.courier.clearWorkspaceCopies(paths, this.deps.workspacePathForAgent(agentId));
+      try {
+        await this.deps.courier.clearWorkspaceCopies(paths, this.deps.workspacePathForAgent(agentId));
+      } catch {
+        // Nothing more to do — the Job's final status is already decided.
+      }
     }
   }
 }

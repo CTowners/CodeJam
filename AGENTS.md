@@ -283,7 +283,51 @@ got built and any gaps/limitations worth knowing before extending it.
    only asserted status codes, never the response body shape. Fixed by moving
    `setErrorHandler` before any `register()` call; regression test added in
    `app.test.ts`.
-   `job-routes.ts`.
+
+**Code review pass (2026-09-01).** Two independent reviews converged on the same
+two most serious issues below — treated as signal, not coincidence. Fixed, in
+severity order:
+- **Crash risk (Critical):** every fire-and-forget `store.mutate()` call inside
+  `JobService.startRun` (`onEvent`/`onMessage`/`onJobUpdate`) and the
+  backgrounded `coordinator.run(job)` itself had no `.catch()` — a disk hiccup
+  mid-Job became an unhandled rejection that could take down the whole process,
+  not just that Job. Reproduced directly (2 of 3 clean runs crashed with an
+  `ENOENT: rename ... db.json.tmp`). Fixed: every persistence callback now logs
+  and swallows; a `coordinator.run()` rejection that still escapes (defense in
+  depth) halts the Job with a clear reason instead of leaving it stuck. Also
+  hardened `Coordinator.runStep` itself so a stale Agent id or a courier I/O
+  failure gets classified through the normal retry/halt machine rather than
+  throwing out of `run()` in the first place.
+- **TOCTOU race in `approveDraft` (Critical):** the one-Job-at-a-time check read
+  `runningJobs.size` before several awaits and only reserved a slot at the very
+  end — two approvals fired close together could both pass the check. Fixed the
+  same way `AgentService.runTurn`'s busy-check already does it elsewhere in this
+  codebase: check-and-reserve as one synchronous step, no await in between.
+- **No restart reconciliation (Critical):** a Job stuck "running" across a crash
+  was never recovered — `AgentService.initialize()` already does this for
+  Agents/Runs; `JobService` had no equivalent. Added `JobService.initialize()`
+  (called from `index.ts` after `AgentService.initialize()`), mirroring that
+  pattern: any Job still `pending`/`running` gets halted with a clear reason and
+  a `job_halted` event on boot.
+- **`Orchestrator.approve()` was tested but dead** — `job-service.ts`
+  reimplemented its logic inline instead of calling it. Made `approve()` `static`
+  (it never needed a `PlanDrafter`) so `JobService` now calls the actual tested path.
+- **Same-Agent conflicts were invisible:** two independent Steps cast to the same
+  Agent were already handled safely (the batch scheduler serializes them), but
+  nothing ever surfaced that a Plan's implied parallelism silently isn't
+  happening. Added `sameAgentConflicts()` (`plan-validation.ts`) — a non-fatal
+  note attached to the `job_started` event's `detail` when this happens.
+- **Minor:** a bad/stale Agent id in the cast is now classified as `auth`-bucket
+  (halt immediately, not a wasted bounded retry) rather than an uncaught throw.
+  `Job.cursor` is now a live-updated count of Steps that reached a terminal
+  state (doc comment updated — it was never an index once Steps could run in
+  parallel). The Orchestrator-Agent lookup now memoizes the in-flight creation
+  *promise*, not just the resolved id, closing a benign create-two-Agents race.
+- **Not fixed, flagged for an explicit call:** the chat-based plan-revision and
+  cast-reassignment picker the spec names by intent are still not wired up —
+  already disclosed honestly (AGENTS.md and the UI's own copy), but still a real
+  gap against something the spec asked for by name. This needs a yes/no on
+  whether it's an accepted v1 cut, not a discovery at demo time.
 
 **No shared mount is needed.** The courier model (copy `needs`/`produces` through
 staging) means Agent workspaces stay sealed and `container-codex-runner.ts` is
