@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -365,6 +365,40 @@ describe("JobService", () => {
 
     const orchestrators = agents.listAgents().filter((agent) => agent.name === "Orchestrator");
     expect(orchestrators).toHaveLength(1);
+  });
+
+  it("retries Orchestrator Agent creation instead of staying permanently broken after a transient failure", async () => {
+    const runner = new ScriptedRunner(() => ({
+      output: JSON.stringify({
+        plan: {
+          steps: [{ id: "s1", role: "a", instruction: "x", needs: [], produces: [] }],
+          contextMode: "none",
+          source: "generated",
+        },
+        castByRole: { a: { kind: "existing", agentId: "agent-1" } },
+      }),
+      threadId: "t",
+      usage: null,
+    }));
+    const { agents, jobs, config } = await makeServices(runner);
+
+    // Simulate a transient failure creating the Orchestrator Agent's workspace
+    // (disk hiccup, permission blip) by making the workspace root briefly
+    // unwritable — the same class of failure a flaky mount could produce.
+    await chmod(config.workspaceRoot, 0o000);
+    try {
+      await expect(jobs.draftJob("Job 1", "task one")).rejects.toThrow();
+    } finally {
+      // Restore before any assertion or later step can itself be blocked by it.
+      await chmod(config.workspaceRoot, 0o755);
+    }
+    expect(agents.listAgents().filter((agent) => agent.name === "Orchestrator")).toHaveLength(0);
+
+    // The condition that caused the failure is gone — a second attempt must not
+    // reuse a permanently-poisoned promise from the first one.
+    const draft = await jobs.draftJob("Job 2", "task two");
+    expect(draft).toBeDefined();
+    expect(agents.listAgents().filter((agent) => agent.name === "Orchestrator")).toHaveLength(1);
   });
 
   it("keeps running instead of crashing when persisting live progress fails", async () => {

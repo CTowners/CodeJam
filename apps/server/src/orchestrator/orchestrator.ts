@@ -1,5 +1,6 @@
 import { validatePlan } from "../coordinator/plan-validation.js";
 import type { DraftedPlan, Job } from "../contracts.js";
+import { HttpError } from "../errors.js";
 import type { AgentCreator } from "./materialize.js";
 import { buildJobFromDraft, materializeCast } from "./materialize.js";
 import type { CapabilityCandidate, PlanDrafter } from "./plan-drafter.js";
@@ -31,7 +32,19 @@ export class Orchestrator {
     let lastErrors: string[] = [];
 
     for (let attempt = 1; attempt <= MAX_DRAFT_ATTEMPTS; attempt += 1) {
-      const draft = await this.drafter.draft(task, candidates, guidance);
+      let draft: DraftedPlan;
+      try {
+        draft = await this.drafter.draft(task, candidates, guidance);
+      } catch (error) {
+        // The drafting turn itself failed (Ark unreachable, the Orchestrator Agent
+        // busy/stopped, malformed model output) — distinct from an *invalid plan*,
+        // which the loop below retries with guidance. Retrying this blindly could
+        // hammer an Agent that's stopped and will never un-stop itself on its own,
+        // so this fails fast with a clear, typed reason instead of letting a raw
+        // error escape uncaught and surface as an opaque 500.
+        const message = error instanceof Error ? error.message : String(error);
+        throw new HttpError(503, `Could not draft a plan: ${message}`);
+      }
       lastErrors = validatePlan(draft.plan);
       if (lastErrors.length === 0) {
         return draft;

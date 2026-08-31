@@ -252,7 +252,15 @@ export class JobService {
           instructions: ORCHESTRATOR_INSTRUCTIONS,
         });
         return created.id;
-      })();
+      })().catch((error: unknown) => {
+        // A rejected promise is still a settled promise — left in place, every
+        // future draftJob() call would reuse and re-await this same permanent
+        // failure. Clear it so a transient creation failure (disk, workspace I/O)
+        // gets a fresh attempt next time instead of poisoning the feature until
+        // a server restart.
+        this.orchestratorAgentIdPromise = null;
+        throw error;
+      });
     }
     return this.orchestratorAgentIdPromise;
   }

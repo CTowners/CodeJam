@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DraftedPlan } from "../contracts.js";
+import { HttpError } from "../errors.js";
 import { FakePlanDrafter } from "./fake-plan-drafter.js";
 import type { AgentCreator } from "./materialize.js";
 import { Orchestrator, OrchestratorDraftError } from "./orchestrator.js";
@@ -58,6 +59,20 @@ describe("Orchestrator.draftPlan", () => {
 
     await expect(orchestrator.draftPlan("do the thing", [])).rejects.toThrow(OrchestratorDraftError);
     expect(drafter.calls).toHaveLength(2);
+  });
+
+  it("fails fast with a clean HttpError, without retrying, when the drafting turn itself fails", async () => {
+    const drafter = new FakePlanDrafter(async () => {
+      throw new Error("Plan drafting turn failed: This Agent is stopped");
+    });
+    const orchestrator = new Orchestrator(drafter);
+
+    const rejection = orchestrator.draftPlan("do the thing", []);
+    await expect(rejection).rejects.toThrow(HttpError);
+    await expect(rejection).rejects.toThrow(/This Agent is stopped/);
+    // A stopped Agent won't un-stop itself between attempts — retrying blindly
+    // would just fail the same way twice for no benefit, so this must not retry.
+    expect(drafter.calls).toHaveLength(1);
   });
 });
 

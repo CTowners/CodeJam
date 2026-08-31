@@ -7,15 +7,19 @@
 export type FailureCause = "transient" | "validation" | "auth" | "cancelled";
 
 const CANCELLED_PATTERN = /\bcancell?ed\b/i;
-// "auth" also catches a stale/missing cast (e.g. "Agent not found") — like a bad
-// credential, retrying the exact same call can never fix it, so it belongs in the
-// halt-immediately bucket rather than burning retries against classifyFailure's
-// default "validation" bucket.
+// "auth" also catches a stale/missing cast ("Agent not found") and an Agent a human
+// has stopped ("This Agent is stopped", agent-service.ts) — like a bad credential,
+// retrying the exact same call can never fix either on its own; both need a human
+// (recast the Step, or restart the Agent) before a retry could ever succeed.
 const AUTH_PATTERN =
-  /\b(401|403|unauthorized|forbidden|invalid[_ -]?api[_ -]?key|auth(?:entication)?[_ -]?(?:failed|error)|not found|no such agent)\b/i;
+  /\b(401|403|unauthorized|forbidden|invalid[_ -]?api[_ -]?key|auth(?:entication)?[_ -]?(?:failed|error)|not found|no such agent|agent is stopped)\b/i;
 const TIMEOUT_PATTERN = /\btimed?[ -]?out\b|\betimedout\b/i;
+// "already running a turn" (agent-service.ts's busy guard) is transient in spirit
+// even though it isn't network-shaped: the Agent is mid-turn on someone else's work
+// right now — the Playground, or another Step — not broken, and backoff gives it a
+// real chance to free up before the next attempt, unlike validation's no-backoff retry.
 const TRANSIENT_PATTERN =
-  /\b(econnreset|econnrefused|enotfound|network|5\d\d|socket hang up|service unavailable|rate[ -]?limit(?:ed)?|429)\b/i;
+  /\b(econnreset|econnrefused|enotfound|network|5\d\d|socket hang up|service unavailable|rate[ -]?limit(?:ed)?|429|already running a turn)\b/i;
 
 export function isTimeout(errorMessage: string): boolean {
   return TIMEOUT_PATTERN.test(errorMessage);
