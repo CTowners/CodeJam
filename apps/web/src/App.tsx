@@ -1,55 +1,39 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentFormValues, AgentRun, Message, SystemInfo } from "./types";
+import { AuthGate, ConnectingScreen } from "./components/AuthScreen";
+import { Sidebar } from "./components/Sidebar";
+import { ConfigBanner } from "./components/ConfigBanner";
+import { AgentHeader } from "./components/AgentHeader";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { Playground } from "./components/Playground";
+import { CreateAgentModal } from "./components/CreateAgentModal";
+import { EmptyAgentState } from "./components/EmptyAgentState";
+import { JobScreen } from "./components/job/JobScreen";
 
-const starterPrompts = [
-  "Create a small TypeScript CLI that prints a weather summary from sample JSON.",
-  "Inspect this workspace and explain what you would improve first.",
-  "Build a responsive single-page todo app with tests.",
-];
+type View = "playground" | "jobs";
 
-const emptyForm = {
+const emptyForm: AgentFormValues = {
   name: "",
   description: "",
   instructions:
     "Help me build and test software in this workspace. Keep changes small and explain the result.",
 };
 
-function formatTime(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
-
-function StatusPill({ status }: { status: Agent["status"] }) {
-  return (
-    <span className={"status status-" + status}>
-      <span className="status-dot" />
-      {status}
-    </span>
-  );
-}
-
-function Spinner() {
-  return <span className="spinner" aria-label="Loading" />;
-}
-
 export default function App() {
+  const [view, setView] = useState<View>("playground");
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [form, setForm] = useState(emptyForm);
-  const [prompt, setPrompt] = useState("");
+  const [form, setForm] = useState<AgentFormValues>(emptyForm);
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
-  const messageEnd = useRef<HTMLDivElement>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
@@ -128,10 +112,6 @@ export default function App() {
       });
     }
   }, [selected]);
-
-  useEffect(() => {
-    messageEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, activeRun]);
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -220,11 +200,8 @@ export default function App() {
     }
   };
 
-  const sendMessage = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!selected || !prompt.trim()) return;
-    const content = prompt.trim();
-    setPrompt("");
+  const sendMessage = async (content: string) => {
+    if (!selected) return;
     setError(null);
     try {
       const result = await api.sendMessage(selected.id, content);
@@ -266,124 +243,51 @@ export default function App() {
   };
 
   if (authRequired === null) {
-    return (
-      <main className="auth-screen">
-        <section className="auth-card" aria-live="polite">
-          <div className="brand-mark">A</div>
-          <span className="eyebrow">Agent Launchpad</span>
-          <h1>Connecting to the control plane</h1>
-          {error ? <div className="error-banner" role="alert">{error}</div> : <Spinner />}
-        </section>
-      </main>
-    );
+    return <ConnectingScreen error={error} />;
   }
 
   if (authRequired) {
     return (
-      <main className="auth-screen">
-        <form className="auth-card" onSubmit={unlock}>
-          <div className="brand-mark">A</div>
-          <span className="eyebrow">Agent Launchpad</span>
-          <h1>Enter the access token</h1>
-          <p>This shared demo token is configured by the platform operator.</p>
-          {error && <div className="error-banner" role="alert">{error}</div>}
-          <label>
-            Access token
-            <input
-              autoFocus
-              type="password"
-              value={authInput}
-              onChange={(event) => setAuthInput(event.target.value)}
-              autoComplete="current-password"
-              required
-            />
-          </label>
-          <button className="button button-primary" disabled={busy || !authInput.trim()}>
-            {busy ? <Spinner /> : "Open Launchpad"}
-          </button>
-        </form>
-      </main>
+      <AuthGate
+        error={error}
+        busy={busy}
+        authInput={authInput}
+        onAuthInputChange={setAuthInput}
+        onSubmit={unlock}
+      />
     );
   }
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">A</div>
-          <div>
-            <strong>Agent Launchpad</strong>
-            <span>
-              {system?.runtimeProvider === "container"
-                ? "Local container · Codex CLI"
-                : "ECS / Docker · Codex CLI"}
-            </span>
-          </div>
-        </div>
-
-        <button
-          className="button button-primary create-button"
-          onClick={() => {
-            setForm(emptyForm);
-            setShowCreate(true);
-          }}
-        >
-          <span>＋</span> Create Agent
-        </button>
-
-        <div className="sidebar-label">
-          <span>Your Agents</span>
-          <span>{agents.length}</span>
-        </div>
-        <nav className="agent-list">
-          {agents.map((agent) => (
-            <button
-              className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
-              key={agent.id}
-              onClick={() => setSelectedId(agent.id)}
-            >
-              <div className="agent-avatar">{agent.name.slice(0, 1).toUpperCase()}</div>
-              <div className="agent-card-copy">
-                <strong>{agent.name}</strong>
-                <span>{agent.description || "Coding Agent"}</span>
-              </div>
-              <span className={"mini-dot mini-" + agent.status} />
-            </button>
-          ))}
-          {agents.length === 0 && (
-            <div className="empty-sidebar">
-              <span>◇</span>
-              Create your first coding Agent.
-            </div>
-          )}
-        </nav>
-
-        <div className="runtime-card">
-          <span className="eyebrow">Runtime</span>
-          <strong>{system?.runtime ?? "Checking…"}</strong>
-          <span>
-            {system?.arkModel ?? "Ark model not configured"}
-            {system?.containerEngine ? " · " + system.containerEngine : ""}
-          </span>
-        </div>
-      </aside>
+      <Sidebar
+        agents={agents}
+        selectedId={selectedId}
+        system={system}
+        onSelect={(id) => {
+          setView("playground");
+          setSelectedId(id);
+        }}
+        onCreateClick={() => {
+          setForm(emptyForm);
+          setShowCreate(true);
+        }}
+      />
 
       <main className="main">
-        {!system?.arkConfigured || !system?.codexAvailable ? (
-          <div className="config-banner">
-            <span>!</span>
-            <div>
-              <strong>Runtime configuration needed</strong>
-              <p>
-                {!system?.arkConfigured
-                  ? "Set ARK_API_KEY and ARK_MODEL in .env before using the Playground."
-                  : system.runtimeProvider === "container"
-                    ? "The local container engine or Agent Runtime image is unavailable. Rerun npm run poc."
-                    : "Codex CLI was not found. Use the Docker image or install @openai/codex."}
-              </p>
-            </div>
-          </div>
-        ) : null}
+        <ConfigBanner system={system} />
+
+        <div className="view-tabs">
+          <button
+            className={"view-tab " + (view === "playground" ? "active" : "")}
+            onClick={() => setView("playground")}
+          >
+            Playground
+          </button>
+          <button className={"view-tab " + (view === "jobs" ? "active" : "")} onClick={() => setView("jobs")}>
+            Jobs
+          </button>
+        </div>
 
         {error && (
           <div className="error-banner" role="alert">
@@ -392,278 +296,55 @@ export default function App() {
           </div>
         )}
 
-        {selected ? (
+        {view === "jobs" ? (
+          <JobScreen agents={agents} />
+        ) : selected ? (
           <>
-            <header className="agent-header">
-              <div>
-                <div className="header-title-row">
-                  <h1>{selected.name}</h1>
-                  <StatusPill status={selected.status} />
-                </div>
-                <p>{selected.description || "A Codex coding Agent in an isolated workspace."}</p>
-              </div>
-              <div className="header-actions">
-                <button
-                  className="button button-ghost"
-                  onClick={() => setShowSettings((value) => !value)}
-                  disabled={busy || selected.status === "busy"}
-                >
-                  Settings
-                </button>
-                <button
-                  className="button button-ghost"
-                  onClick={toggleAgent}
-                  disabled={busy}
-                >
-                  {selected.status === "stopped" ? "Start" : "Stop"}
-                </button>
-                <button
-                  className="button button-danger"
-                  onClick={deleteAgent}
-                  disabled={busy || selected.status === "busy"}
-                >
-                  Delete
-                </button>
-              </div>
-            </header>
+            <AgentHeader
+              agent={selected}
+              busy={busy}
+              onToggleSettings={() => setShowSettings((value) => !value)}
+              onToggleAgent={toggleAgent}
+              onDelete={deleteAgent}
+            />
 
             {showSettings && (
-              <form className="settings-panel" onSubmit={saveAgent}>
-                <div className="settings-title">
-                  <div>
-                    <span className="eyebrow">Agent configuration</span>
-                    <h2>Instructions and identity</h2>
-                  </div>
-                  <button type="button" onClick={() => setShowSettings(false)}>×</button>
-                </div>
-                <div className="form-grid">
-                  <label>
-                    Name
-                    <input
-                      value={form.name}
-                      onChange={(event) => setForm({ ...form, name: event.target.value })}
-                      required
-                      maxLength={80}
-                    />
-                  </label>
-                  <label>
-                    Description
-                    <input
-                      value={form.description}
-                      onChange={(event) =>
-                        setForm({ ...form, description: event.target.value })
-                      }
-                      maxLength={500}
-                    />
-                  </label>
-                </div>
-                <label>
-                  System instructions
-                  <textarea
-                    value={form.instructions}
-                    onChange={(event) =>
-                      setForm({ ...form, instructions: event.target.value })
-                    }
-                    rows={5}
-                    maxLength={10_000}
-                  />
-                </label>
-                <div className="panel-footer">
-                  <code>{selected.workspacePath}</code>
-                  <button className="button button-primary" disabled={busy}>
-                    {busy ? <Spinner /> : "Save changes"}
-                  </button>
-                </div>
-              </form>
+              <SettingsPanel
+                form={form}
+                busy={busy}
+                workspacePath={selected.workspacePath}
+                onChange={setForm}
+                onSubmit={saveAgent}
+                onClose={() => setShowSettings(false)}
+              />
             )}
 
-            <section className="playground">
-              <div className="playground-topbar">
-                <div>
-                  <span className="eyebrow">Playground</span>
-                  <h2>Build something with your Agent</h2>
-                </div>
-                <div className="session-info">
-                  <span className="pulse" />
-                  {selected.codexThreadId ? "Session connected" : "New session"}
-                </div>
-              </div>
-
-              <div className="messages">
-                {messages.length === 0 && !activeRun ? (
-                  <div className="welcome">
-                    <div className="welcome-orbit">
-                      <div>⌁</div>
-                    </div>
-                    <h3>What should {selected.name} build?</h3>
-                    <p>
-                      The Agent can inspect files, write code, run commands, and continue the
-                      same Codex session across messages.
-                    </p>
-                    <div className="prompt-grid">
-                      {starterPrompts.map((item) => (
-                        <button key={item} onClick={() => setPrompt(item)}>
-                          <span>↗</span>
-                          {item}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  messages.map((message) => (
-                    <article className={"message message-" + message.role} key={message.id}>
-                      <div className="message-meta">
-                        <strong>{message.role === "user" ? "You" : selected.name}</strong>
-                        <span>{formatTime(message.createdAt)}</span>
-                      </div>
-                      <div className="message-body">{message.content}</div>
-                    </article>
-                  ))
-                )}
-                {activeRun && ["queued", "running"].includes(activeRun.status) && (
-                  <article className="message message-assistant thinking">
-                    <div className="message-meta">
-                      <strong>{selected.name}</strong>
-                      <span>working in the Agent workspace</span>
-                    </div>
-                    <div className="thinking-row">
-                      <Spinner />
-                      Codex is reading, editing, or running commands…
-                    </div>
-                  </article>
-                )}
-                {activeRun?.status === "failed" && (
-                  <article className="run-error">
-                    <strong>Run failed</strong>
-                    <span>{activeRun.error}</span>
-                  </article>
-                )}
-                <div ref={messageEnd} />
-              </div>
-
-              <form className="composer" onSubmit={sendMessage}>
-                <textarea
-                  value={prompt}
-                  onChange={(event) => setPrompt(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && !event.shiftKey) {
-                      event.preventDefault();
-                      event.currentTarget.form?.requestSubmit();
-                    }
-                  }}
-                  placeholder={
-                    selected.status === "stopped"
-                      ? "Start this Agent to continue…"
-                      : "Describe what you want the Agent to do…"
-                  }
-                  disabled={
-                    selected.status === "stopped" ||
-                    selected.status === "busy" ||
-                    activeRun != null && ["queued", "running"].includes(activeRun.status)
-                  }
-                  rows={3}
-                />
-                <div className="composer-footer">
-                  <span>
-                    Enter to send · Shift + Enter for newline · {system?.codexSandboxMode ?? "checking sandbox"}
-                  </span>
-                  <button
-                    className="send-button"
-                    disabled={
-                      !prompt.trim() ||
-                      selected.status === "stopped" ||
-                      selected.status === "busy" ||
-                      (activeRun != null && ["queued", "running"].includes(activeRun.status))
-                    }
-                    aria-label="Send message"
-                  >
-                    ↑
-                  </button>
-                </div>
-              </form>
-            </section>
+            <Playground
+              agent={selected}
+              system={system}
+              messages={messages}
+              activeRun={activeRun}
+              onSend={sendMessage}
+            />
           </>
         ) : (
-          <div className="no-agent">
-            <div className="no-agent-art">A</div>
-            <span className="eyebrow">Agent Launchpad</span>
-            <h1>Your runtime is ready for an Agent.</h1>
-            <p>Create a workspace, give Codex a job, and continue the conversation here.</p>
-            <button
-              className="button button-primary"
-              onClick={() => {
-                setForm(emptyForm);
-                setShowCreate(true);
-              }}
-            >
-              Create your first Agent
-            </button>
-          </div>
+          <EmptyAgentState
+            onCreateClick={() => {
+              setForm(emptyForm);
+              setShowCreate(true);
+            }}
+          />
         )}
       </main>
 
       {showCreate && (
-        <div className="modal-backdrop" onMouseDown={() => setShowCreate(false)}>
-          <form
-            className="modal"
-            onSubmit={createAgent}
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="modal-heading">
-              <div>
-                <span className="eyebrow">New workspace</span>
-                <h2>Create an Agent</h2>
-                <p>Each Agent gets a persistent folder and a resumable Codex session.</p>
-              </div>
-              <button type="button" onClick={() => setShowCreate(false)}>×</button>
-            </div>
-            <label>
-              Name
-              <input
-                autoFocus
-                placeholder="Frontend Builder"
-                value={form.name}
-                onChange={(event) => setForm({ ...form, name: event.target.value })}
-                required
-                maxLength={80}
-              />
-            </label>
-            <label>
-              Description
-              <input
-                placeholder="Builds polished React prototypes"
-                value={form.description}
-                onChange={(event) =>
-                  setForm({ ...form, description: event.target.value })
-                }
-                maxLength={500}
-              />
-            </label>
-            <label>
-              Instructions
-              <textarea
-                value={form.instructions}
-                onChange={(event) =>
-                  setForm({ ...form, instructions: event.target.value })
-                }
-                rows={6}
-                maxLength={10_000}
-              />
-            </label>
-            <div className="modal-footer">
-              <button
-                type="button"
-                className="button button-ghost"
-                onClick={() => setShowCreate(false)}
-              >
-                Cancel
-              </button>
-              <button className="button button-primary" disabled={busy}>
-                {busy ? <Spinner /> : "Create Agent"}
-              </button>
-            </div>
-          </form>
-        </div>
+        <CreateAgentModal
+          form={form}
+          busy={busy}
+          onChange={setForm}
+          onSubmit={createAgent}
+          onClose={() => setShowCreate(false)}
+        />
       )}
     </div>
   );

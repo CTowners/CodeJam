@@ -1,3 +1,5 @@
+import type { CoordinationEvent, Job, JobMessage } from "./contracts.js";
+
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
@@ -7,6 +9,12 @@ export interface Agent {
   name: string;
   description: string;
   instructions: string;
+  /**
+   * Derived from `instructions`, regenerated whenever it changes — never
+   * hand-typed. The Orchestrator matches Plan Steps against this, not
+   * `description` (user-authored, sidebar-only, never used for matching).
+   */
+  capabilitySummary: string;
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
@@ -44,8 +52,20 @@ export interface AgentRun {
 }
 
 export interface Database {
-  version: 1;
+  version: 2;
   agents: Agent[];
+  messages: Message[];
+  runs: AgentRun[];
+  jobs: Job[];
+  /** Job-turn transcript. Distinct from `messages`, which is Playground chat. */
+  jobMessages: JobMessage[];
+  events: CoordinationEvent[];
+}
+
+/** v1 on disk, before the coordination collections existed. */
+export interface DatabaseV1 {
+  version: 1;
+  agents: Omit<Agent, "capabilitySummary">[];
   messages: Message[];
   runs: AgentRun[];
 }

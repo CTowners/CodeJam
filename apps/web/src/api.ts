@@ -1,4 +1,13 @@
-import type { Agent, AgentRun, Message, SystemInfo } from "./types";
+import type {
+  Agent,
+  AgentRun,
+  CoordinationEvent,
+  Job,
+  JobDraft,
+  JobMessage,
+  Message,
+  SystemInfo,
+} from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -78,4 +87,20 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
+  draftJob: (body: { name?: string; task: string }) =>
+    request<JobDraft>("/api/jobs/draft", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  getDraft: (draftId: string) => request<JobDraft>("/api/jobs/drafts/" + draftId),
+  approveDraft: (draftId: string) =>
+    request<{ job: Job }>("/api/jobs/drafts/" + draftId + "/approve", {
+      method: "POST",
+    }),
+  listJobs: () => request<{ jobs: Job[] }>("/api/jobs"),
+  getJob: (id: string) => request<{ job: Job }>("/api/jobs/" + id),
+  getJobMessages: (id: string) => request<{ messages: JobMessage[] }>("/api/jobs/" + id + "/messages"),
+  getJobEvents: (id: string) => request<{ events: CoordinationEvent[] }>("/api/jobs/" + id + "/events"),
+  cancelJob: (id: string) =>
+    request<{ job: Job }>("/api/jobs/" + id + "/cancel", { method: "POST" }),
 };
