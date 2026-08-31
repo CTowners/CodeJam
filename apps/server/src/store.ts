@@ -1,12 +1,33 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { Database } from "./types.js";
+import { summarizeCapability } from "./capability-summary.js";
+import type { Database, DatabaseV1 } from "./types.js";
 
 const emptyDatabase = (): Database => ({
-  version: 1,
+  version: 2,
   agents: [],
   messages: [],
   runs: [],
+  jobs: [],
+  jobMessages: [],
+  events: [],
+});
+
+const isDatabaseV1 = (parsed: { version: unknown }): parsed is DatabaseV1 =>
+  parsed.version === 1;
+
+/** v1 had no coordination collections and no Agent.capabilitySummary. */
+const migrateV1 = (v1: DatabaseV1): Database => ({
+  version: 2,
+  agents: v1.agents.map((agent) => ({
+    ...agent,
+    capabilitySummary: summarizeCapability(agent.instructions),
+  })),
+  messages: v1.messages,
+  runs: v1.runs,
+  jobs: [],
+  jobMessages: [],
+  events: [],
 });
 
 export class JsonStore {
@@ -19,11 +40,18 @@ export class JsonStore {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Database;
-      if (parsed.version !== 1 || !Array.isArray(parsed.agents)) {
+      const parsed = JSON.parse(raw) as Database | DatabaseV1;
+      if (!Array.isArray(parsed.agents)) {
         throw new Error("Unsupported database format");
       }
-      this.data = parsed;
+      if (isDatabaseV1(parsed)) {
+        this.data = migrateV1(parsed);
+        await this.persist();
+      } else if (parsed.version === 2) {
+        this.data = parsed;
+      } else {
+        throw new Error("Unsupported database format");
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         throw error;

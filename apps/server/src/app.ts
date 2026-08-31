@@ -7,6 +7,8 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
+import { jobRoutes } from "./job-routes.js";
+import type { JobService } from "./job-service.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -26,6 +28,7 @@ const messageBody = z.object({
 export async function createApp(
   config: AppConfig,
   service: AgentService,
+  jobService: JobService,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: {
@@ -33,6 +36,38 @@ export async function createApp(
       redact: ["req.headers.authorization", "req.headers.cookie"],
     },
     bodyLimit: 1_048_576,
+  });
+
+  // Must be set before any `await app.register(...)` below: with no explicit
+  // app.ready() before use (we return app straight to the caller — index.ts's
+  // listen() and app.test.ts's inject() both boot it lazily), Fastify/avvio
+  // finalizes each awaited register() call's error-handler wiring immediately,
+  // so a setErrorHandler placed after one only covers routes registered after
+  // it too — every route defined before falls back to Fastify's own default
+  // handler instead (right status code, but the generic HTTP reason phrase in
+  // `error` instead of the actual message, and no ZodError `details`).
+  app.setErrorHandler((error, request, reply) => {
+    const appError = error instanceof Error ? error : new Error(String(error));
+    const validationError = error instanceof z.ZodError;
+    const frameworkStatus =
+      typeof (error as { statusCode?: unknown }).statusCode === "number"
+        ? (error as { statusCode: number }).statusCode
+        : null;
+    const statusCode =
+      error instanceof HttpError
+        ? error.statusCode
+        : validationError
+          ? 400
+          : frameworkStatus && frameworkStatus >= 400 && frameworkStatus <= 599
+            ? frameworkStatus
+            : 500;
+    if (statusCode >= 500) {
+      request.log.error(appError);
+    }
+    return reply.code(statusCode).send({
+      error: appError.message,
+      ...(validationError ? { details: error.issues } : {}),
+    });
   });
 
   await app.register(cors, {
@@ -128,6 +163,8 @@ export async function createApp(
     return { run: service.getRun(id) };
   });
 
+  await app.register(jobRoutes, { jobService });
+
   if (config.nodeEnv === "production") {
     const webRoot = fileURLToPath(new URL("../../web/dist", import.meta.url));
     await app.register(fastifyStatic, {
@@ -141,30 +178,6 @@ export async function createApp(
       return reply.sendFile("index.html");
     });
   }
-
-  app.setErrorHandler((error, request, reply) => {
-    const appError = error instanceof Error ? error : new Error(String(error));
-    const validationError = error instanceof z.ZodError;
-    const frameworkStatus =
-      typeof (error as { statusCode?: unknown }).statusCode === "number"
-        ? (error as { statusCode: number }).statusCode
-        : null;
-    const statusCode =
-      error instanceof HttpError
-        ? error.statusCode
-        : validationError
-          ? 400
-          : frameworkStatus && frameworkStatus >= 400 && frameworkStatus <= 599
-            ? frameworkStatus
-            : 500;
-    if (statusCode >= 500) {
-      request.log.error(appError);
-    }
-    return reply.code(statusCode).send({
-      error: appError.message,
-      ...(validationError ? { details: error.issues } : {}),
-    });
-  });
 
   return app;
 }

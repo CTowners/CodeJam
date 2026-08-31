@@ -4,9 +4,37 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
+import { RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+
+function makeCancellableRunner(): AgentRunner & { cancelled: boolean; started: Promise<void> } {
+  let rejectRun: ((error: Error) => void) | null = null;
+  let notifyStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    notifyStarted = resolve;
+  });
+  const runner = {
+    cancelled: false,
+    started,
+    async run(_request: RunnerRequest): Promise<RunnerResult> {
+      return new Promise<RunnerResult>((_resolve, reject) => {
+        rejectRun = reject;
+        notifyStarted();
+      });
+    },
+    async cancel(): Promise<boolean> {
+      runner.cancelled = true;
+      rejectRun?.(new RunCancelledError());
+      return true;
+    },
+    async isAvailable(): Promise<boolean> {
+      return true;
+    },
+  };
+  return runner;
+}
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -35,7 +63,10 @@ afterEach(async () => {
   );
 });
 
-async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {
+async function makeService(
+  runner: AgentRunner = new FakeRunner(),
+  envOverrides: Record<string, string> = {},
+): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -45,6 +76,7 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
     CODEX_HOME: path.join(root, "codex"),
     ARK_API_KEY: "test-key",
     ARK_MODEL: "ep-test",
+    ...envOverrides,
   });
   const service = new AgentService(
     config,
@@ -129,5 +161,96 @@ describe("Agent lifecycle", () => {
 
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+});
+
+describe("AgentService as a TurnRunner (Job turns)", () => {
+  it("runs a turn and updates codexThreadId, without creating a Playground message", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Turner" });
+
+    const result = await service.runTurn(agent.id, "do the step", 5_000);
+
+    expect(result).toMatchObject({ ok: true, error: null, reply: "Completed: do the step" });
+    expect(service.getAgent(agent.id).codexThreadId).toBe("fake-thread");
+    expect(service.getMessages(agent.id)).toHaveLength(0);
+  });
+
+  it("fails without throwing when Ark is not configured", async () => {
+    const service = await makeService(new FakeRunner(), { ARK_API_KEY: "", ARK_MODEL: "" });
+    const agent = await service.createAgent({ name: "Keyless" });
+
+    const result = await service.runTurn(agent.id, "do the step", 5_000);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Ark is not configured/);
+  });
+
+  it("fails without throwing for an unknown Agent id", async () => {
+    const service = await makeService();
+
+    const result = await service.runTurn("00000000-0000-0000-0000-000000000000", "do it", 5_000);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Agent not found/);
+  });
+
+  it("fails without throwing when the Agent is already mid-turn", async () => {
+    let finish!: (result: RunnerResult) => void;
+    const pending = new Promise<RunnerResult>((resolve) => {
+      finish = resolve;
+    });
+    const service = await makeService({
+      run: () => pending,
+      cancel: async () => false,
+      isAvailable: async () => true,
+    });
+    const agent = await service.createAgent({ name: "Busy" });
+
+    const first = service.runTurn(agent.id, "first", 5_000);
+    const second = await service.runTurn(agent.id, "second", 5_000);
+
+    expect(second.ok).toBe(false);
+    expect(second.error).toMatch(/already running a turn/);
+
+    finish({ output: "done", threadId: "thread", usage: null });
+    await first;
+  });
+
+  it("clears codexThreadId on resetMemory", async () => {
+    const service = await makeService();
+    const agent = await service.createAgent({ name: "Forgetful" });
+    await service.runTurn(agent.id, "do the step", 5_000);
+    expect(service.getAgent(agent.id).codexThreadId).not.toBeNull();
+
+    await service.resetMemory(agent.id);
+
+    expect(service.getAgent(agent.id).codexThreadId).toBeNull();
+  });
+
+  it("classifies its own watchdog timeout distinctly from a genuine external cancellation", async () => {
+    const runner = makeCancellableRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Slow" });
+
+    const result = await service.runTurn(agent.id, "do it", 20);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/Turn timed out after 20ms/);
+    expect(runner.cancelled).toBe(true);
+  });
+
+  it("keeps the original message when cancellation comes from outside the watchdog", async () => {
+    const runner = makeCancellableRunner();
+    const service = await makeService(runner);
+    const agent = await service.createAgent({ name: "Cancelled" });
+
+    const turnPromise = service.runTurn(agent.id, "do it", 60_000);
+    await runner.started;
+    await runner.cancel(agent.id);
+    const result = await turnPromise;
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("Run cancelled");
   });
 });

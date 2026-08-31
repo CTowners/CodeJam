@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
+import { summarizeCapability } from "./capability-summary.js";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
+import type { TurnResult, TurnRunner } from "./contracts.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type {
@@ -15,7 +17,7 @@ import { WorkspaceManager } from "./workspace.js";
 
 const now = () => new Date().toISOString();
 
-export class AgentService {
+export class AgentService implements TurnRunner {
   private readonly activeExecutions = new Map<string, Promise<void>>();
   private readonly cancellationRequests = new Set<string>();
 
@@ -63,11 +65,13 @@ export class AgentService {
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
+    const instructions = input.instructions?.trim() ?? "";
     const agent: Agent = {
       id,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
-      instructions: input.instructions?.trim() ?? "",
+      instructions,
+      capabilitySummary: summarizeCapability(instructions),
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,
@@ -95,7 +99,10 @@ export class AgentService {
       }
       if (input.name !== undefined) agent.name = input.name.trim();
       if (input.description !== undefined) agent.description = input.description.trim();
-      if (input.instructions !== undefined) agent.instructions = input.instructions.trim();
+      if (input.instructions !== undefined) {
+        agent.instructions = input.instructions.trim();
+        agent.capabilitySummary = summarizeCapability(agent.instructions);
+      }
       agent.lastError = null;
       agent.updatedAt = now();
       return structuredClone(agent);
@@ -211,6 +218,115 @@ export class AgentService {
       })
       .catch(() => undefined);
     return { run, message };
+  }
+
+  /**
+   * TurnRunner implementation, so a Coordinator can drive this AgentService
+   * directly (see index.ts). Separate from sendMessage/executeRun: a Job turn
+   * doesn't create a Playground AgentRun/Message, and failures come back as a
+   * TurnResult rather than a thrown error, so the Coordinator can classify the
+   * cause instead of catching an exception.
+   */
+  async runTurn(agentId: string, prompt: string, timeoutMs: number): Promise<TurnResult> {
+    const start = Date.now();
+    if (!isArkConfigured(this.config)) {
+      return {
+        ok: false,
+        reply: "",
+        error: "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.",
+        durationMs: Date.now() - start,
+      };
+    }
+    // Check-and-flip-to-busy happens inside one mutate() call, same as sendMessage
+    // — mutate()'s queue serializes callbacks, so this is atomic. Doing the check
+    // and the flip as two separate awaited steps would leave a window where two
+    // concurrent runTurn calls for the same Agent both read "ready" before either
+    // one's flip lands, and both proceed.
+    let agent: Agent;
+    try {
+      agent = await this.store.mutate((database) => {
+        const stored = database.agents.find((item) => item.id === agentId);
+        if (!stored) {
+          throw new HttpError(404, "Agent not found");
+        }
+        if (stored.status === "busy") {
+          throw new HttpError(409, "This Agent is already running a turn");
+        }
+        if (stored.status === "stopped") {
+          throw new HttpError(409, "This Agent is stopped");
+        }
+        const snapshot = structuredClone(stored);
+        stored.status = "busy";
+        stored.updatedAt = now();
+        return snapshot;
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        reply: "",
+        error: error instanceof Error ? error.message : String(error),
+        durationMs: Date.now() - start,
+      };
+    }
+
+    // Our own watchdog, distinct from the underlying runner's own timeout: it lets
+    // the Coordinator's per-turn budget (which may be shorter) cut a turn off, and
+    // cancels the runner so a retry against the same Agent isn't blocked behind it.
+    let timedOut = false;
+    const watchdog = setTimeout(() => {
+      timedOut = true;
+      void this.runner.cancel(agentId);
+    }, timeoutMs);
+
+    try {
+      const result = await this.runner.run({
+        agentId,
+        workspacePath: agent.workspacePath,
+        prompt,
+        threadId: agent.codexThreadId,
+      });
+      await this.store.mutate((database) => {
+        const stored = database.agents.find((item) => item.id === agentId);
+        if (stored) {
+          stored.status = "ready";
+          stored.codexThreadId = result.threadId;
+          stored.lastError = null;
+          stored.updatedAt = now();
+        }
+      });
+      return { ok: true, reply: result.output, error: null, durationMs: Date.now() - start };
+    } catch (error) {
+      // A watchdog-triggered cancel surfaces as the same RunCancelledError a real
+      // user cancellation would — override its message so failure-classifier sees
+      // a timeout, not "cancelled", here. An external cancel (not from this
+      // watchdog) keeps the original message and is correctly classified cancelled.
+      const message = timedOut
+        ? `Turn timed out after ${timeoutMs}ms`
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      await this.store.mutate((database) => {
+        const stored = database.agents.find((item) => item.id === agentId);
+        if (stored && stored.status !== "stopped") {
+          stored.status = "ready";
+          stored.lastError = message;
+          stored.updatedAt = now();
+        }
+      });
+      return { ok: false, reply: "", error: message, durationMs: Date.now() - start };
+    } finally {
+      clearTimeout(watchdog);
+    }
+  }
+
+  async resetMemory(agentId: string): Promise<void> {
+    await this.store.mutate((database) => {
+      const agent = database.agents.find((item) => item.id === agentId);
+      if (agent) {
+        agent.codexThreadId = null;
+        agent.updatedAt = now();
+      }
+    });
   }
 
   async systemInfo(): Promise<Record<string, unknown>> {

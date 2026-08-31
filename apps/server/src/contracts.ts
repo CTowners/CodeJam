@@ -3,16 +3,21 @@
  *
  * Types only, no logic — everyone can import this without importing behaviour.
  *
- * The model in one paragraph: a standing team of Agents already exists, each with
- * a role baked into its instructions. A Job hands that team one task, described as
- * an ordered Plan of Steps. The Coordinator (plain code) executes the Plan, giving
- * one Step at a time to the Agent that holds that role, checking each reply before
- * it becomes state. Agents never see each other's folders — the Coordinator couriers
- * declared files in before a turn and out afterwards.
+ * The model in one paragraph: a standing team of Agents already exists. A Job hands
+ * that team one task, described by the Orchestrator as an ordered Plan of Steps,
+ * each cast to the Agent whose capabilitySummary best matches — not a fixed role
+ * vocabulary. The Coordinator (plain code) executes the Plan, giving one Step at a
+ * time to its cast Agent, checking each reply before it becomes state. Agents never
+ * see each other's folders — the Coordinator couriers declared files in before a
+ * turn and out afterwards.
  */
 
-/** Which specialist a step is addressed to. Maps to an Agent via Job.castByRole. */
-export type AgentRole = "architect" | "implementer" | "tester" | "reviewer" | "counter";
+/**
+ * A short label the Orchestrator invents per Job (e.g. "implementer", "reviewer")
+ * to describe what a Step needs — not a fixed enum. Maps to an Agent via
+ * Job.castByRole. Casting matches this against every Agent's capabilitySummary.
+ */
+export type AgentRole = string;
 
 export type JobStatus =
   | "pending"    // created, not started
@@ -69,6 +74,27 @@ export interface Plan {
   contextMode: ContextMode;
   /** Where the Plan came from. Handwritten today; a planner Agent could fill this later. */
   source: "builtin" | "generated";
+}
+
+/**
+ * How the Orchestrator proposes to cast a role, before the user approves anything.
+ * "new" is the draft-then-materialize path: nothing is created yet, it's just a
+ * proposed name + instructions shown in plan review like any other cast pick.
+ * Only on approval does a "new" proposal become a real Agent (see orchestrator/materialize.ts).
+ */
+export type CastProposal =
+  | { kind: "existing"; agentId: string }
+  | { kind: "new"; name: string; instructions: string };
+
+/**
+ * What the Orchestrator hands back for user review. Not a Job yet — nothing has
+ * run, no Agent has been created for any "new" cast proposal. The user reviews,
+ * revises, and approves this once, upfront (AGENTS.md §5); approval is what turns
+ * it into a real Job via orchestrator/materialize.ts's buildJobFromDraft.
+ */
+export interface DraftedPlan {
+  plan: Plan;
+  castByRole: Partial<Record<AgentRole, CastProposal>>;
 }
 
 export interface Job {
