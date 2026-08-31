@@ -136,12 +136,18 @@ describe("JobService", () => {
     expect(["pending", "running"]).toContain(job.status);
     expect(() => jobs.getDraft(draft.draftId)).toThrow(); // approval consumes the draft
 
-    await expect.poll(() => jobs.getJob(job.id).status).toBe("completed");
+    // job.status and the "job_completed" event are two separate, unawaited
+    // store.mutate() calls (CoordinatorOptions is deliberately fire-and-forget —
+    // see its doc comment) — enqueued in the right order internally, but nothing
+    // guarantees an outside observer sees them land together. Poll on the event
+    // itself rather than on status, or this can flake in exactly the narrow
+    // window between the two writes landing.
+    await expect.poll(() => jobs.getJobEvents(job.id).map((event) => event.type)).toContain("job_completed");
+    expect(jobs.getJob(job.id).status).toBe("completed");
 
     const messages = jobs.getJobMessages(job.id);
     expect(messages).toHaveLength(1);
     expect(messages[0]!.content).toBe("done");
-    expect(jobs.getJobEvents(job.id).map((event) => event.type)).toContain("job_completed");
   });
 
   it("materializes a \"new\" cast proposal into a real, inspectable Agent on approval", async () => {
