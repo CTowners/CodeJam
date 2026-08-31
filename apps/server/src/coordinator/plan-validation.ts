@@ -1,16 +1,42 @@
+import path from "node:path";
 import type { AgentRole, Plan } from "../contracts.js";
 
 /**
+ * `needs`/`produces` are drafted by the Orchestrator's model call — the one input
+ * surface an adversarial task prompt (or a misbehaving model) can actually shape.
+ * A path outside the intended root ("../../etc/passwd", an absolute path) is
+ * rejected here before a Job ever starts, in addition to FileCourier's own
+ * runtime bounds check (defense in depth — FileCourier runs in the Coordinator's
+ * host process, not the sandboxed Runtime container, so a traversal that slipped
+ * through would touch the real host filesystem).
+ */
+function isSafeRelativePath(candidate: string): boolean {
+  if (!candidate || path.isAbsolute(candidate)) return false;
+  return candidate.split(/[\\/]+/).every((segment) => segment !== "..");
+}
+
+/**
  * Checked once, before a Job starts: two Steps declaring the same `produces` is a
- * conflict (which one wins?), and a Step's `needs` must trace back to an earlier
- * Step's `produces` or be treated as externally supplied. Both are plan-authoring
- * mistakes, not runtime races — catching them here is what makes the Coordinator's
+ * conflict (which one wins?), a Step's `needs` must trace back to an earlier
+ * Step's `produces` or be treated as externally supplied, and every declared path
+ * must stay inside its intended root. All three are plan-authoring mistakes (or
+ * worse), not runtime races — catching them here is what makes the Coordinator's
  * dependency-gated scheduling race-free by construction (see AGENTS.md §5).
  */
 export function validatePlan(plan: Plan): string[] {
   const errors: string[] = [];
   const producedBy = new Map<string, string>();
   const indexOf = new Map(plan.steps.map((step, index) => [step.id, index]));
+
+  for (const step of plan.steps) {
+    for (const stepPath of [...step.produces, ...step.needs]) {
+      if (!isSafeRelativePath(stepPath)) {
+        errors.push(
+          `Step "${step.id}" declares an unsafe path "${stepPath}" — must be relative, without ".." segments`,
+        );
+      }
+    }
+  }
 
   for (const step of plan.steps) {
     for (const path of step.produces) {

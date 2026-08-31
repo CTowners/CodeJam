@@ -7,12 +7,13 @@
 export type FailureCause = "transient" | "validation" | "auth" | "cancelled";
 
 const CANCELLED_PATTERN = /\bcancell?ed\b/i;
-// "auth" also catches a stale/missing cast ("Agent not found") and an Agent a human
-// has stopped ("This Agent is stopped", agent-service.ts) — like a bad credential,
-// retrying the exact same call can never fix either on its own; both need a human
-// (recast the Step, or restart the Agent) before a retry could ever succeed.
+// "auth" also catches a stale/missing cast ("Agent not found"), an Agent a human
+// has stopped ("This Agent is stopped", agent-service.ts), and a needs-path that
+// escapes its root (file-courier.ts) — like a bad credential, retrying the exact
+// same call can never fix any of these on its own; each needs a human (recast the
+// Step, restart the Agent, or fix the drafted Plan) before a retry could succeed.
 const AUTH_PATTERN =
-  /\b(401|403|unauthorized|forbidden|invalid[_ -]?api[_ -]?key|auth(?:entication)?[_ -]?(?:failed|error)|not found|no such agent|agent is stopped)\b/i;
+  /\b(401|403|unauthorized|forbidden|invalid[_ -]?api[_ -]?key|auth(?:entication)?[_ -]?(?:failed|error)|not found|no such agent|agent is stopped|escapes its intended root)\b/i;
 const TIMEOUT_PATTERN = /\btimed?[ -]?out\b|\betimedout\b/i;
 // "already running a turn" (agent-service.ts's busy guard) is transient in spirit
 // even though it isn't network-shaped: the Agent is mid-turn on someone else's work

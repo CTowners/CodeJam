@@ -38,6 +38,46 @@ describe("validatePlan", () => {
     };
     expect(validatePlan(plan)).toHaveLength(1);
   });
+
+  it("flags a produces path that escapes its root via ..", () => {
+    const plan: Plan = {
+      steps: [{ id: "s1", role: "a", instruction: "x", needs: [], produces: ["../../etc/passwd"] }],
+      contextMode: "none",
+      source: "generated",
+    };
+    const errors = validatePlan(plan);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/unsafe path/);
+  });
+
+  it("flags a needs path that is absolute", () => {
+    const plan: Plan = {
+      steps: [{ id: "s1", role: "a", instruction: "x", needs: ["/etc/passwd"], produces: [] }],
+      contextMode: "none",
+      source: "generated",
+    };
+    const errors = validatePlan(plan);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/unsafe path/);
+  });
+
+  it("flags a .. segment buried in the middle of an otherwise normal-looking path", () => {
+    const plan: Plan = {
+      steps: [{ id: "s1", role: "a", instruction: "x", needs: [], produces: ["output/../../secrets.txt"] }],
+      contextMode: "none",
+      source: "generated",
+    };
+    expect(validatePlan(plan)).toHaveLength(1);
+  });
+
+  it("accepts an ordinary nested relative path", () => {
+    const plan: Plan = {
+      steps: [{ id: "s1", role: "a", instruction: "x", needs: [], produces: ["src/routes/todos.ts"] }],
+      contextMode: "none",
+      source: "generated",
+    };
+    expect(validatePlan(plan)).toEqual([]);
+  });
 });
 
 describe("sameAgentConflicts", () => {

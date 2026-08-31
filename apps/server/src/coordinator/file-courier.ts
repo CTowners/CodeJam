@@ -9,17 +9,32 @@ import path from "node:path";
  * removes the temporary copies from an Agent's own workspace, called once at
  * Job completion/halt rather than after every Step, since a later Step may still
  * need them.
+ *
+ * `needs`/`produces` are model-drafted strings — `validatePlan` rejects an unsafe
+ * one before a Job ever starts, but every path here is re-resolved and
+ * bounds-checked again regardless, since this class runs in the Coordinator's own
+ * host process, not inside the sandboxed Runtime container. A traversal that
+ * slipped past validation would otherwise touch the real host filesystem.
  */
 export class FileCourier {
   constructor(private readonly stagingDir: string) {}
 
+  private resolveWithin(root: string, relativePath: string): string {
+    const resolvedRoot = path.resolve(root);
+    const resolved = path.resolve(resolvedRoot, relativePath);
+    if (resolved !== resolvedRoot && !resolved.startsWith(resolvedRoot + path.sep)) {
+      throw new Error(`Path "${relativePath}" escapes its intended root`);
+    }
+    return resolved;
+  }
+
   private stagingPath(relativePath: string): string {
-    return path.join(this.stagingDir, relativePath);
+    return this.resolveWithin(this.stagingDir, relativePath);
   }
 
   async copyIn(relativePaths: readonly string[], workspaceDir: string): Promise<void> {
     for (const relativePath of relativePaths) {
-      const destination = path.join(workspaceDir, relativePath);
+      const destination = this.resolveWithin(workspaceDir, relativePath);
       await mkdir(path.dirname(destination), { recursive: true });
       await copyFile(this.stagingPath(relativePath), destination);
     }
@@ -28,7 +43,12 @@ export class FileCourier {
   /** Null if every produces file exists and is non-empty; else the first problem, one line. */
   async verifyProduces(relativePaths: readonly string[], workspaceDir: string): Promise<string | null> {
     for (const relativePath of relativePaths) {
-      const fullPath = path.join(workspaceDir, relativePath);
+      let fullPath: string;
+      try {
+        fullPath = this.resolveWithin(workspaceDir, relativePath);
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
       let info;
       try {
         info = await stat(fullPath);
@@ -46,13 +66,13 @@ export class FileCourier {
     for (const relativePath of relativePaths) {
       const destination = this.stagingPath(relativePath);
       await mkdir(path.dirname(destination), { recursive: true });
-      await copyFile(path.join(workspaceDir, relativePath), destination);
+      await copyFile(this.resolveWithin(workspaceDir, relativePath), destination);
     }
   }
 
   async clearWorkspaceCopies(relativePaths: Iterable<string>, workspaceDir: string): Promise<void> {
     for (const relativePath of relativePaths) {
-      await rm(path.join(workspaceDir, relativePath), { force: true });
+      await rm(this.resolveWithin(workspaceDir, relativePath), { force: true });
     }
   }
 

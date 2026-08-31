@@ -262,6 +262,21 @@ describe("Coordinator", () => {
     expect(finished.status).toBe("halted");
     expect(finished.haltedReason).toMatch(/both declare produces "shared\.txt"/);
     expect(events).toHaveLength(1);
+  });
+
+  it("rejects a Plan with a produces path that escapes its root, before running any turn", async () => {
+    const runner = new FakeTurnRunner(async () => ok("should never run"));
+    const steps: PlanStep[] = [
+      { id: "s1", role: "a", instruction: "x", needs: [], produces: ["../../etc/passwd"] },
+    ];
+    const job = makeJob(steps, { a: "agent-1" });
+
+    const coordinator = new Coordinator({ runner, courier, workspacePathForAgent });
+    const { job: finished, events } = await coordinator.run(job);
+
+    expect(finished.status).toBe("halted");
+    expect(finished.haltedReason).toMatch(/unsafe path/);
+    expect(events).toHaveLength(1);
     expect(events[0]!.type).toBe("job_halted");
   });
 

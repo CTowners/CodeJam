@@ -25,4 +25,8 @@ describe("classifyFailure", () => {
   it("classifies a network-shaped error as transient", () => {
     expect(classifyFailure("connect ECONNREFUSED 127.0.0.1:443")).toBe("transient");
   });
+
+  it("classifies a path-traversal escape as auth (a malicious/hallucinated path won't fix itself on retry)", () => {
+    expect(classifyFailure('Path "../../etc/passwd" escapes its intended root')).toBe("auth");
+  });
 });
