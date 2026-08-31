@@ -289,19 +289,26 @@ describe("Coordinator", () => {
     const liveEvents: string[] = [];
     const liveMessages: string[] = [];
     const liveStatuses: string[] = [];
+    const liveCursors: number[] = [];
     const coordinator = new Coordinator(
       { runner, courier, workspacePathForAgent },
       {
         onEvent: (event) => liveEvents.push(event.type),
         onMessage: (message) => liveMessages.push(message.content),
-        onJobUpdate: (updated) => liveStatuses.push(updated.status),
+        onJobUpdate: (updated) => {
+          liveStatuses.push(updated.status);
+          liveCursors.push(updated.cursor);
+        },
       },
     );
     await coordinator.run(job);
 
     expect(liveEvents).toEqual(["job_started", "turn_started", "turn_completed", "job_completed"]);
     expect(liveMessages).toEqual(["42"]);
-    expect(liveStatuses).toEqual(["running", "completed"]);
+    // job_started -> "running" (cursor 0); the Step finishing -> "running" again
+    // (cursor 1, the progress counter, live-updated); job_completed -> "completed".
+    expect(liveStatuses).toEqual(["running", "running", "completed"]);
+    expect(liveCursors).toEqual([0, 1, 1]);
   });
 
   it("checks replyPattern against the last non-empty line of the reply", async () => {
@@ -314,5 +321,71 @@ describe("Coordinator", () => {
     const { job: finished } = await coordinator.run(job);
 
     expect(finished.status).toBe("completed");
+  });
+
+  it("classifies a stale/missing Agent id instead of letting run() reject", async () => {
+    // Deliberately never registered — mirrors a deleted/renamed Agent still in castByRole.
+    const runner = new FakeTurnRunner(async () => ok("should never be called"));
+    const step: PlanStep = { id: "s1", role: "a", instruction: "do work", needs: [], produces: [] };
+    const job = makeJob([step], { a: "agent-ghost" });
+
+    const coordinator = new Coordinator({ runner, courier, workspacePathForAgent }, { backoffMs: () => 0 });
+    const { job: finished } = await coordinator.run(job); // must not reject
+
+    expect(finished.status).toBe("halted");
+    expect(finished.haltedReason).toMatch(/no workspace registered for agent-ghost/);
+  });
+
+  it("classifies a courier copyIn failure instead of letting run() reject", async () => {
+    await registerAgentWorkspace("agent-1");
+    const runner = new FakeTurnRunner(async () => ok("should never be called"));
+    // needs a file that was never seeded into staging — copyIn will throw ENOENT.
+    const step: PlanStep = { id: "s1", role: "a", instruction: "do work", needs: ["missing.txt"], produces: [] };
+    const job = makeJob([step], { a: "agent-1" });
+
+    const coordinator = new Coordinator({ runner, courier, workspacePathForAgent }, { backoffMs: () => 0 });
+    const { job: finished } = await coordinator.run(job); // must not reject
+
+    expect(finished.status).toBe("halted");
+  });
+
+  it("classifies a courier copyOut failure instead of letting run() reject", async () => {
+    const workspaceDir = await registerAgentWorkspace("agent-1");
+    // A plain file sits where the staging dir needs to be, so copyOut's own
+    // mkdir(..., { recursive: true }) fails (ENOTDIR) instead of silently working.
+    const blockedStagingPath = path.join(root, "blocked-staging-dir");
+    await writeFile(blockedStagingPath, "not a directory");
+    const brokenCourier = new FileCourier(blockedStagingPath);
+    const runner = new FakeTurnRunner(async () => {
+      await writeFile(path.join(workspaceDir, "out.txt"), "done");
+      return ok("done");
+    });
+    const step: PlanStep = { id: "s1", role: "a", instruction: "do work", needs: [], produces: ["out.txt"] };
+    const job = makeJob([step], { a: "agent-1" });
+
+    const coordinator = new Coordinator(
+      { runner, courier: brokenCourier, workspacePathForAgent },
+      { backoffMs: () => 0 },
+    );
+    const { job: finished } = await coordinator.run(job); // must not reject
+
+    expect(finished.status).toBe("halted");
+  });
+
+  it("notes two independent Steps cast to the same Agent in the job_started event, without failing the Job", async () => {
+    await registerAgentWorkspace("agent-1");
+    const runner = new FakeTurnRunner(async () => ok("done"));
+    const steps: PlanStep[] = [
+      { id: "s1", role: "a", instruction: "x", needs: [], produces: [] },
+      { id: "s2", role: "b", instruction: "y", needs: [], produces: [] },
+    ];
+    const job = makeJob(steps, { a: "agent-1", b: "agent-1" });
+
+    const coordinator = new Coordinator({ runner, courier, workspacePathForAgent });
+    const { job: finished, events } = await coordinator.run(job);
+
+    expect(finished.status).toBe("completed");
+    const jobStarted = events.find((event) => event.type === "job_started");
+    expect(jobStarted?.detail).toMatch(/"s1".*"s2".*same Agent/);
   });
 });

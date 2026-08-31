@@ -7,8 +7,12 @@
 export type FailureCause = "transient" | "validation" | "auth" | "cancelled";
 
 const CANCELLED_PATTERN = /\bcancell?ed\b/i;
+// "auth" also catches a stale/missing cast (e.g. "Agent not found") — like a bad
+// credential, retrying the exact same call can never fix it, so it belongs in the
+// halt-immediately bucket rather than burning retries against classifyFailure's
+// default "validation" bucket.
 const AUTH_PATTERN =
-  /\b(401|403|unauthorized|forbidden|invalid[_ -]?api[_ -]?key|auth(?:entication)?[_ -]?(?:failed|error))\b/i;
+  /\b(401|403|unauthorized|forbidden|invalid[_ -]?api[_ -]?key|auth(?:entication)?[_ -]?(?:failed|error)|not found|no such agent)\b/i;
 const TIMEOUT_PATTERN = /\btimed?[ -]?out\b|\betimedout\b/i;
 const TRANSIENT_PATTERN =
   /\b(econnreset|econnrefused|enotfound|network|5\d\d|socket hang up|service unavailable|rate[ -]?limit(?:ed)?|429)\b/i;

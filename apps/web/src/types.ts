@@ -107,6 +107,7 @@ export interface Job {
   castByRole: Partial<Record<AgentRole, string>>;
   plan: Plan;
   status: JobStatus;
+  /** Count of Steps that reached a terminal state — a progress counter, not an index. */
   cursor: number;
   haltedReason: string | null;
   createdAt: string;

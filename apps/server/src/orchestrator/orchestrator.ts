@@ -45,8 +45,14 @@ export class Orchestrator {
     );
   }
 
-  /** Approval: materialize any "new" cast proposals into real Agents, then build the Job. */
-  async approve(name: string, task: string, draft: DraftedPlan, creator: AgentCreator): Promise<Job> {
+  /**
+   * Approval: materialize any "new" cast proposals into real Agents, then build
+   * the Job. Static — approval doesn't need a PlanDrafter, only draftPlan() does
+   * — so a caller that only has a drafted plan in hand (no Orchestrator instance
+   * around) can still go through the one tested approval path instead of
+   * reimplementing it inline.
+   */
+  static async approve(name: string, task: string, draft: DraftedPlan, creator: AgentCreator): Promise<Job> {
     const castByRole = await materializeCast(draft, creator);
     return buildJobFromDraft(name, task, draft, castByRole);
   }

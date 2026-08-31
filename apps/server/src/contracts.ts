@@ -106,7 +106,11 @@ export interface Job {
   castByRole: Partial<Record<AgentRole, string>>;
   plan: Plan;
   status: JobStatus;
-  /** Index into plan.steps of the step currently running, or about to. */
+  /**
+   * How many Steps have reached a terminal state (completed/rejected/skipped/
+   * timeout) — a simple monotonic progress counter, not an index. Steps can run
+   * in parallel, so there's no single "current" one to point at.
+   */
   cursor: number;
   /** Set when status is "halted". Human-readable. */
   haltedReason: string | null;

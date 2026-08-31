@@ -62,15 +62,14 @@ describe("Orchestrator.draftPlan", () => {
 });
 
 describe("Orchestrator.approve", () => {
-  it("passes an \"existing\" cast proposal through unchanged, without creating an Agent", async () => {
-    const orchestrator = new Orchestrator(new FakePlanDrafter());
+  it("is static (no PlanDrafter/instance needed) and passes an \"existing\" cast proposal through unchanged", async () => {
     const creator: AgentCreator = {
       createAgent: async () => {
         throw new Error("should not be called");
       },
     };
 
-    const job = await orchestrator.approve("My Job", "do the thing", validDraft, creator);
+    const job = await Orchestrator.approve("My Job", "do the thing", validDraft, creator);
 
     expect(job.castByRole.implementer).toBe("agent-1");
     expect(job.status).toBe("pending");
@@ -92,8 +91,7 @@ describe("Orchestrator.approve", () => {
       },
     };
 
-    const orchestrator = new Orchestrator(new FakePlanDrafter());
-    const job = await orchestrator.approve("My Job", "do the thing", draftWithNewAgent, creator);
+    const job = await Orchestrator.approve("My Job", "do the thing", draftWithNewAgent, creator);
 
     expect(created).toEqual([{ name: "Fresh Agent", instructions: "be fresh" }]);
     expect(job.castByRole.implementer).toBe("new-agent-id");
