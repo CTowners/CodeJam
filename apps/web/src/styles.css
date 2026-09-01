@@ -476,6 +476,32 @@ button {
   font-size: 23px;
 }
 
+.agent-title-renamable {
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+}
+
+.agent-title-renamable:hover {
+  border-bottom-color: #c9c6bb;
+}
+
+.agent-title-input {
+  margin: 0;
+  padding: 0 0 1px;
+  border: 0;
+  border-bottom: 1px dashed var(--purple);
+  background: transparent;
+  font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+  letter-spacing: -0.035em;
+  font-size: 23px;
+  color: var(--ink);
+  min-width: 6ch;
+}
+
+.agent-title-input:focus {
+  outline: none;
+}
+
 .agent-header p {
   margin: 5px 0 0;
   color: var(--muted);

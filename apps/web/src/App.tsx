@@ -138,10 +138,26 @@ export default function App() {
     setBusy(true);
     setError(null);
     try {
-      const { agent } = await api.createAgent({ name: "New Chat", kind: "orchestrator" });
+      // Chats can't be deleted, so a simple count is a stable, monotonically
+      // increasing "next number" regardless of how existing chats were renamed.
+      const nextNumber = agents.filter(isOrchestratorAgent).length + 1;
+      const { agent } = await api.createAgent({ name: "Chat " + nextNumber, kind: "orchestrator" });
       await refreshAgents();
       setSelectedId(agent.id);
       setView("playground");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const renameAgent = async (id: string, name: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateAgent(id, { name });
+      await refreshAgents();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -368,6 +384,7 @@ export default function App() {
               onToggleSettings={() => setShowSettings((value) => !value)}
               onToggleAgent={toggleAgent}
               onDelete={deleteAgent}
+              onRename={(name) => void renameAgent(selected.id, name)}
             />
 
             {showSettings && !isOrchestratorAgent(selected) && (

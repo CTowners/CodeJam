@@ -34,7 +34,7 @@ export function Sidebar({
       </div>
 
       <button className="button button-primary create-button" onClick={onNewChat}>
-        <span>＋</span> New Chat
+        <span>＋</span> Chat
       </button>
 
       <div className="sidebar-label">
