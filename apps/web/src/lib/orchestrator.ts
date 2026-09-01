@@ -139,18 +139,73 @@ export function deriveChatPhase(messages: readonly Pick<Message, "role" | "conte
   return messages.length === 0 ? "starting" : "discussing";
 }
 
-const AFFIRMATIVE_PATTERN =
-  /^(ok(ay)?|yes|yeah|yep|yup|sure|approve[d]?|go ahead|go for it|do it|sounds good|looks good|lgtm|run it|let'?s go|proceed)[.!,\s]*$/i;
+const AFFIRMATIVE_WORDS = new Set([
+  "ok",
+  "okay",
+  "yes",
+  "yeah",
+  "yea",
+  "yep",
+  "yup",
+  "sure",
+  "approve",
+  "approved",
+  "proceed",
+  "confirm",
+  "confirmed",
+  "lgtm",
+]);
+const AFFIRMATIVE_PHRASES = [
+  "go ahead",
+  "go for it",
+  "do it",
+  "run it",
+  "start it",
+  "kick it off",
+  "sounds good",
+  "looks good",
+  "let's go",
+  "lets go",
+  "let's do it",
+  "lets do it",
+  "ship it",
+  "make it happen",
+];
+const NEGATIVE_WORDS = new Set([
+  "no",
+  "not",
+  "don't",
+  "dont",
+  "wait",
+  "stop",
+  "hold",
+  "change",
+  "instead",
+  "actually",
+  "but",
+  "except",
+  "unless",
+]);
 
 /**
- * There's no "Approve & Run" button — approval is just saying so. This gates
- * that: only checked against the user's message when the immediately
- * preceding assistant reply was a drafted plan (see App.tsx's sendMessage),
- * so an unrelated "ok" earlier in the conversation is never mistaken for
- * approval. The materialize/run action it triggers is exactly what the old
- * button called, and still goes through the same server-side revalidation —
- * only the trigger changed, not the safety of the action itself.
+ * There's no "Approve & Run" button — approval is just saying so, and real
+ * replies are short phrases ("yes go ahead", "sounds good", "yeah do it"),
+ * not always an exact match for one fixed sentence — hence a word/phrase
+ * heuristic instead of a single regex: short (≤6 words), no negation, and
+ * either a standalone affirmative word or a recognized short phrase. Only
+ * ever checked against the user's message when the immediately preceding
+ * assistant reply was a drafted plan (see App.tsx's sendMessage), so an
+ * unrelated "ok" earlier in the conversation is never mistaken for
+ * approval — and when it does fire, the message is never sent to the model
+ * at all (see approvePlanFromChat), so there's no chance for it to narrate
+ * a guess about what happens next.
  */
 export function isAffirmative(text: string): boolean {
-  return AFFIRMATIVE_PATTERN.test(text.trim());
+  const normalized = text.trim().toLowerCase().replace(/[.!?]+$/, "");
+  if (!normalized) return false;
+  const words = normalized.replace(/[.,!?]/g, "").split(/\s+/).filter(Boolean);
+  if (words.length > 6) return false;
+  if (words.some((word) => NEGATIVE_WORDS.has(word))) return false;
+  if (words.some((word) => AFFIRMATIVE_WORDS.has(word))) return true;
+  return AFFIRMATIVE_PHRASES.some((phrase) => normalized.includes(phrase));
 }

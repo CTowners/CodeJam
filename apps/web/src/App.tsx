@@ -164,10 +164,27 @@ export default function App() {
     }
   };
 
-  const approvePlan = async (draft: DraftedPlan) => {
+  /**
+   * The approval path a plain "yes" reaching here takes — deliberately never
+   * sent to the model as a turn. The model has no way of knowing whether the
+   * approvePlan call below actually succeeds, so letting it narrate a guess
+   * ("the Coordinator will now...") produces exactly the confusing, often-
+   * wrong story this avoids; the confirmation the user sees is generated
+   * here, from the real outcome, not predicted by the model.
+   */
+  const approvePlanFromChat = async (userText: string, draft: DraftedPlan) => {
     if (!selected || approvingRef.current) return;
     approvingRef.current = true;
     setError(null);
+
+    const askedAt = new Date().toISOString();
+    if (selectedIdRef.current === selected.id) {
+      setMessages((current) => [
+        ...current,
+        { id: "local-" + askedAt, agentId: selected.id, runId: "local", role: "user", content: userText, createdAt: askedAt },
+      ]);
+    }
+
     try {
       const task =
         messages
@@ -175,6 +192,23 @@ export default function App() {
           .map((message) => message.content)
           .join("\n\n") || selected.name;
       const { job } = await api.approvePlan({ name: selected.name, task, draft });
+
+      if (selectedIdRef.current === selected.id) {
+        const confirmedAt = new Date().toISOString();
+        setMessages((current) => [
+          ...current,
+          {
+            id: "local-" + confirmedAt,
+            agentId: selected.id,
+            runId: "local",
+            role: "assistant",
+            content: "Got it — the Job is starting now. Switching you to the Jobs tab to watch its progress.",
+            createdAt: confirmedAt,
+          },
+        ]);
+      }
+      // Long enough to actually read the confirmation before the view moves.
+      await new Promise((resolve) => window.setTimeout(resolve, 700));
       setFocusJobId(job.id);
       setView("jobs");
     } catch (reason) {
@@ -261,15 +295,14 @@ export default function App() {
     // No "Approve & Run" button — running the plan is just saying so. Only
     // checked when the immediately preceding assistant reply was a drafted
     // plan, so an unrelated "ok" earlier in the conversation never gets
-    // mistaken for approval; still goes through the same server-side
-    // revalidation approvePlan always did.
+    // mistaken for approval. When it matches, this returns without ever
+    // calling the model — see approvePlanFromChat's doc comment for why.
     if (isOrchestratorAgent(selected) && isAffirmative(content)) {
       const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
-      if (lastAssistant) {
-        const parsed = classifyReply(lastAssistant.content);
-        if (parsed.kind === "plan") {
-          void approvePlan(parsed.draft);
-        }
+      const parsed = lastAssistant ? classifyReply(lastAssistant.content) : null;
+      if (parsed?.kind === "plan") {
+        await approvePlanFromChat(content, parsed.draft);
+        return;
       }
     }
 
