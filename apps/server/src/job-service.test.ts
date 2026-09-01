@@ -152,6 +152,27 @@ describe("JobService", () => {
     expect(jobs.listJobs()).toHaveLength(0);
   });
 
+  it("rejects an \"existing\" cast proposal whose agentId doesn't match any real Agent", async () => {
+    const runner = new ScriptedRunner(() => ({ output: "done", threadId: "impl-thread", usage: null }));
+    const { jobs } = await makeServices(runner);
+
+    await expect(
+      jobs.approvePlan("Bad Job", "task", draftWithImplementer("does-not-exist")),
+    ).rejects.toMatchObject({ statusCode: 400 });
+    expect(jobs.listJobs()).toHaveLength(0);
+  });
+
+  it("rejects an \"existing\" cast proposal that points at a chat instead of a work Agent", async () => {
+    const runner = new ScriptedRunner(() => ({ output: "done", threadId: "impl-thread", usage: null }));
+    const { agents, jobs } = await makeServices(runner);
+    const chat = await agents.createAgent({ name: "Planning chat", kind: "orchestrator" });
+
+    await expect(jobs.approvePlan("Bad Job", "task", draftWithImplementer(chat.id))).rejects.toMatchObject({
+      statusCode: 400,
+    });
+    expect(jobs.listJobs()).toHaveLength(0);
+  });
+
   it("materializes a \"new\" cast proposal into a real, inspectable Agent on approval", async () => {
     const runner = new ScriptedRunner(() => ({ output: "done", threadId: "impl-thread", usage: null }));
 

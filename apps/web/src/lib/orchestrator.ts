@@ -74,7 +74,7 @@ export const CHAT_PHASE_LABEL: Record<ChatPhase, string> = {
   starting: "Tell me about the task",
   discussing: "Discussing the task",
   thinking: "Thinking…",
-  "plan-ready": "Plan ready — review below",
+  "plan-ready": "Plan ready — say the word to run it",
 };
 
 /**
@@ -89,4 +89,20 @@ export function deriveChatPhase(messages: readonly Pick<Message, "role" | "conte
   const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
   if (lastAssistant && classifyReply(lastAssistant.content).kind === "plan") return "plan-ready";
   return messages.length === 0 ? "starting" : "discussing";
+}
+
+const AFFIRMATIVE_PATTERN =
+  /^(ok(ay)?|yes|yeah|yep|yup|sure|approve[d]?|go ahead|go for it|do it|sounds good|looks good|lgtm|run it|let'?s go|proceed)[.!,\s]*$/i;
+
+/**
+ * There's no "Approve & Run" button — approval is just saying so. This gates
+ * that: only checked against the user's message when the immediately
+ * preceding assistant reply was a drafted plan (see App.tsx's sendMessage),
+ * so an unrelated "ok" earlier in the conversation is never mistaken for
+ * approval. The materialize/run action it triggers is exactly what the old
+ * button called, and still goes through the same server-side revalidation —
+ * only the trigger changed, not the safety of the action itself.
+ */
+export function isAffirmative(text: string): boolean {
+  return AFFIRMATIVE_PATTERN.test(text.trim());
 }

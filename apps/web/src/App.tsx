@@ -10,7 +10,7 @@ import { Playground } from "./components/Playground";
 import { CreateAgentModal } from "./components/CreateAgentModal";
 import { EmptyAgentState } from "./components/EmptyAgentState";
 import { JobScreen } from "./components/job/JobScreen";
-import { isOrchestratorAgent } from "./lib/orchestrator";
+import { classifyReply, isAffirmative, isOrchestratorAgent } from "./lib/orchestrator";
 
 type View = "playground" | "jobs";
 
@@ -35,8 +35,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
-  const [approvingPlanFor, setApprovingPlanFor] = useState<string | null>(null);
   const [focusJobId, setFocusJobId] = useState<string | null>(null);
+  const approvingRef = useRef(false);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
@@ -164,9 +164,9 @@ export default function App() {
     }
   };
 
-  const approvePlan = async (draft: DraftedPlan, messageId: string) => {
-    if (!selected) return;
-    setApprovingPlanFor(messageId);
+  const approvePlan = async (draft: DraftedPlan) => {
+    if (!selected || approvingRef.current) return;
+    approvingRef.current = true;
     setError(null);
     try {
       const task =
@@ -180,7 +180,7 @@ export default function App() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setApprovingPlanFor(null);
+      approvingRef.current = false;
     }
   };
 
@@ -257,6 +257,22 @@ export default function App() {
   const sendMessage = async (content: string) => {
     if (!selected) return;
     setError(null);
+
+    // No "Approve & Run" button — running the plan is just saying so. Only
+    // checked when the immediately preceding assistant reply was a drafted
+    // plan, so an unrelated "ok" earlier in the conversation never gets
+    // mistaken for approval; still goes through the same server-side
+    // revalidation approvePlan always did.
+    if (isOrchestratorAgent(selected) && isAffirmative(content)) {
+      const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+      if (lastAssistant) {
+        const parsed = classifyReply(lastAssistant.content);
+        if (parsed.kind === "plan") {
+          void approvePlan(parsed.draft);
+        }
+      }
+    }
+
     try {
       const result = await api.sendMessage(selected.id, content);
       if (selectedIdRef.current === selected.id) {
@@ -382,8 +398,6 @@ export default function App() {
               messages={messages}
               activeRun={activeRun}
               onSend={sendMessage}
-              onApprovePlan={(draft, messageId) => void approvePlan(draft, messageId)}
-              approvingPlanFor={approvingPlanFor}
             />
           </>
         ) : (

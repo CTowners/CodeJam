@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Agent, AgentRun, DraftedPlan, Message, SystemInfo } from "../types";
+import type { Agent, AgentRun, Message, SystemInfo } from "../types";
 import { formatTime } from "../lib/format";
 import { CHAT_PHASE_LABEL, classifyReply, deriveChatPhase, isOrchestratorAgent } from "../lib/orchestrator";
 import { PlanCard } from "./PlanCard";
@@ -18,8 +18,6 @@ export function Playground({
   messages,
   activeRun,
   onSend,
-  onApprovePlan,
-  approvingPlanFor,
 }: {
   agent: Agent;
   agents: Agent[];
@@ -27,9 +25,6 @@ export function Playground({
   messages: Message[];
   activeRun: AgentRun | null;
   onSend: (content: string) => void;
-  onApprovePlan: (draft: DraftedPlan, messageId: string) => void;
-  /** The message id of the plan card currently being approved, if any. */
-  approvingPlanFor: string | null;
 }) {
   const [prompt, setPrompt] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
@@ -87,7 +82,7 @@ export function Playground({
             <p>
               {isChat
                 ? "Describe the task, ask questions, and refine it together. Once I understand it well " +
-                  "enough, I'll draft an ordered Plan and proposed cast right here — nothing runs until you approve it."
+                  "enough, I'll draft an ordered Plan and proposed cast right here — nothing runs until you say so."
                 : "The Agent can inspect files, write code, run commands, and continue the same " +
                   "Codex session across messages."}
             </p>
@@ -127,14 +122,7 @@ export function Playground({
                   <span>{formatTime(message.createdAt)}</span>
                 </div>
                 {parsed.kind === "text" && <div className="message-body">{message.content}</div>}
-                {parsed.kind === "plan" && (
-                  <PlanCard
-                    draft={parsed.draft}
-                    agents={agents}
-                    approving={approvingPlanFor === message.id}
-                    onApprove={() => onApprovePlan(parsed.draft, message.id)}
-                  />
-                )}
+                {parsed.kind === "plan" && <PlanCard draft={parsed.draft} agents={agents} />}
                 {parsed.kind === "invalid-plan-attempt" && (
                   <div className="plan-card plan-card-invalid">
                     <strong>The drafted plan wasn't in the expected shape.</strong>

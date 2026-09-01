@@ -5,7 +5,7 @@ import { Coordinator } from "./coordinator/coordinator.js";
 import { FileCourier } from "./coordinator/file-courier.js";
 import { validatePlan } from "./coordinator/plan-validation.js";
 import type { AppConfig } from "./config.js";
-import type { CoordinationEvent, DraftedPlan, Job, JobMessage } from "./contracts.js";
+import type { AgentRole, CastProposal, CoordinationEvent, DraftedPlan, Job, JobMessage } from "./contracts.js";
 import { COORDINATION_LIMITS } from "./contracts.js";
 import { HttpError } from "./errors.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
@@ -98,9 +98,9 @@ export class JobService {
    * chat turn, not a stored server-side draft.
    */
   async approvePlan(name: string, task: string, draft: DraftedPlan): Promise<Job> {
-    const planErrors = validatePlan(draft.plan);
-    if (planErrors.length > 0) {
-      throw new HttpError(400, `Invalid plan: ${planErrors.join("; ")}`);
+    const errors = [...validatePlan(draft.plan), ...this.validateCast(draft.castByRole)];
+    if (errors.length > 0) {
+      throw new HttpError(400, `Invalid plan: ${errors.join("; ")}`);
     }
     if (this.runningCount >= COORDINATION_LIMITS.maxConcurrentJobs) {
       throw new HttpError(409, "A Job is already running — only one runs at a time");
@@ -121,6 +121,32 @@ export class JobService {
       this.runningCount -= 1; // never actually started a run — release the slot
       throw error;
     }
+  }
+
+  /**
+   * The schema alone can't catch this: `agentId` is typed as a non-empty
+   * string, so a hallucinated id (the model was supposed to copy one from the
+   * candidate list, but doesn't always) still parses fine. Left unchecked, it
+   * would only surface as a 404 deep inside Coordinator once the Job actually
+   * tries to run that Step — this rejects it upfront, at approval, with a
+   * clear reason instead.
+   */
+  private validateCast(castByRole: Partial<Record<AgentRole, CastProposal>>): string[] {
+    const errors: string[] = [];
+    for (const [role, proposal] of Object.entries(castByRole)) {
+      if (!proposal || proposal.kind !== "existing") continue;
+      let agent;
+      try {
+        agent = this.agents.getAgent(proposal.agentId);
+      } catch {
+        errors.push(`Role "${role}" is cast to an Agent id that doesn't exist: "${proposal.agentId}"`);
+        continue;
+      }
+      if (agent.kind === "orchestrator") {
+        errors.push(`Role "${role}" is cast to a chat, not a work Agent: "${proposal.agentId}"`);
+      }
+    }
+    return errors;
   }
 
   /**

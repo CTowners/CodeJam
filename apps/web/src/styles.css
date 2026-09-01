@@ -1203,9 +1203,16 @@ textarea:focus {
 .plan-card-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  gap: 16px;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 16px;
   margin-bottom: 14px;
+}
+
+.plan-card-hint {
+  color: var(--purple-dark);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 .plan-card-invalid {
@@ -1231,33 +1238,41 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  counter-reset: step;
 }
 
 .plan-step {
-  counter-increment: step;
   border: 1px solid var(--line);
   border-radius: 11px;
   padding: 13px 14px;
-  position: relative;
 }
 
-.plan-step::before {
-  content: counter(step);
-  position: absolute;
-  top: 13px;
-  right: 14px;
-  color: #b4b3aa;
+.plan-step-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.plan-step-number {
   font-size: 11px;
   font-weight: 700;
+  color: #b4b3aa;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
-.plan-step-role {
+.plan-step-assignee {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
   margin-bottom: 8px;
+}
+
+.assignee-label {
+  font-size: 10px;
+  color: var(--muted);
 }
 
 .role-chip,
@@ -1304,8 +1319,27 @@ textarea:focus {
 
 .plan-step-files {
   display: flex;
-  gap: 14px;
+  gap: 18px;
   flex-wrap: wrap;
+  margin: 0;
+}
+
+.plan-step-files > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.plan-step-files dt {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.plan-step-files dd {
+  margin: 0;
   font-size: 10px;
   color: var(--muted);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
