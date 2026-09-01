@@ -276,6 +276,17 @@ button {
   margin-top: 3px;
 }
 
+.agent-list-system {
+  padding-bottom: 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid #2e2e2a;
+}
+
+.agent-avatar-system {
+  color: #f3ecd8;
+  background: #6b5a2e;
+}
+
 .mini-dot,
 .status-dot {
   border-radius: 999px;

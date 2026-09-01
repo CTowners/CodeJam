@@ -81,4 +81,51 @@ describe("HTTP boundary", () => {
     });
     await app.close();
   });
+
+  it("refuses to delete the Orchestrator Agent, at the request boundary not just the UI", async () => {
+    let deleteCalled = false;
+    const protectedService = {
+      listAgents: () => [],
+      systemInfo: async () => ({}),
+      getAgent: (id: string) => ({ id, name: "Orchestrator", status: "ready" }),
+      deleteAgent: async () => {
+        deleteCalled = true;
+        return { archivedWorkspace: "/should/never/be/called" };
+      },
+    } as unknown as AgentService;
+
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), protectedService, jobService);
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000",
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json().error).toMatch(/Orchestrator Agent/);
+    expect(deleteCalled).toBe(false);
+    await app.close();
+  });
+
+  it("still allows deleting an ordinary Agent", async () => {
+    let deleteCalled = false;
+    const ordinaryService = {
+      listAgents: () => [],
+      systemInfo: async () => ({}),
+      getAgent: (id: string) => ({ id, name: "Implementer", status: "ready" }),
+      deleteAgent: async () => {
+        deleteCalled = true;
+        return { archivedWorkspace: "/archived" };
+      },
+    } as unknown as AgentService;
+
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), ordinaryService, jobService);
+    const response = await app.inject({
+      method: "DELETE",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(deleteCalled).toBe(true);
+    await app.close();
+  });
 });

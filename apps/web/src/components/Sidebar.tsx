@@ -1,4 +1,5 @@
 import type { Agent, SystemInfo } from "../types";
+import { isOrchestratorAgent } from "../lib/orchestrator";
 
 export function Sidebar({
   agents,
@@ -13,6 +14,9 @@ export function Sidebar({
   onSelect: (id: string) => void;
   onCreateClick: () => void;
 }) {
+  const orchestrator = agents.find(isOrchestratorAgent);
+  const yourAgents = agents.filter((agent) => !isOrchestratorAgent(agent));
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -31,12 +35,33 @@ export function Sidebar({
         <span>＋</span> Create Agent
       </button>
 
+      {orchestrator && (
+        <>
+          <div className="sidebar-label">
+            <span>System</span>
+          </div>
+          <nav className="agent-list agent-list-system">
+            <button
+              className={"agent-card agent-card-system " + (orchestrator.id === selectedId ? "selected" : "")}
+              onClick={() => onSelect(orchestrator.id)}
+            >
+              <div className="agent-avatar agent-avatar-system">{orchestrator.name.slice(0, 1).toUpperCase()}</div>
+              <div className="agent-card-copy">
+                <strong>{orchestrator.name}</strong>
+                <span>Drafts Plans for Jobs</span>
+              </div>
+              <span className={"mini-dot mini-" + orchestrator.status} />
+            </button>
+          </nav>
+        </>
+      )}
+
       <div className="sidebar-label">
         <span>Your Agents</span>
-        <span>{agents.length}</span>
+        <span>{yourAgents.length}</span>
       </div>
       <nav className="agent-list">
-        {agents.map((agent) => (
+        {yourAgents.map((agent) => (
           <button
             className={"agent-card " + (agent.id === selectedId ? "selected" : "")}
             key={agent.id}
@@ -50,7 +75,7 @@ export function Sidebar({
             <span className={"mini-dot mini-" + agent.status} />
           </button>
         ))}
-        {agents.length === 0 && (
+        {yourAgents.length === 0 && (
           <div className="empty-sidebar">
             <span>◇</span>
             Create your first coding Agent.
