@@ -41,7 +41,13 @@ export function Playground({
 
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, activeRun]);
+    // Deliberately not [messages, activeRun]: pollRun (App.tsx) hands back a
+    // fresh activeRun object every ~900ms while a run is in flight, and a new
+    // array reference on every render — depending on those directly would
+    // re-scroll on every poll tick, snapping the view back to the bottom out
+    // from under anyone who scrolled up mid-run. length/status only change on
+    // genuinely new content or a real state transition.
+  }, [messages.length, activeRun?.status]);
 
   const running = activeRun != null && ["queued", "running"].includes(activeRun.status);
   const disabled = agent.status === "stopped" || agent.status === "busy" || running;
