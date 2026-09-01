@@ -7,8 +7,8 @@ export const RESPONSE_CONTRACT = `Respond with ONLY a single JSON object, no pro
         "id": "short-kebab-id",
         "role": "short free-form label, e.g. \\"implementer\\"",
         "instruction": "what this Agent should do, in full",
-        "needs": ["workspace-relative/paths.txt"],
-        "produces": ["workspace-relative/paths.txt"],
+        "needs": ["relative/path/inside/its/own/workspace.txt"],
+        "produces": ["relative/path/inside/its/own/workspace.txt"],
         "replyPattern": "optional regex the LAST non-empty line of the reply must match"
       }
     ],
@@ -22,6 +22,12 @@ export const RESPONSE_CONTRACT = `Respond with ONLY a single JSON object, no pro
 }
 
 Rules:
+- Every path in "needs"/"produces", and every path you tell an Agent to read or
+  write in its "instruction", MUST be relative to that Agent's own workspace
+  root — just a bare filename or subpath, e.g. "hello.py" or "src/app.py".
+  NEVER a leading "/", and NEVER prefixed with "/workspace/" or any other
+  directory name — that prefix is not part of the actual path and will be
+  rejected. Wrong: "/workspace/hello.py", "/hello.py". Right: "hello.py".
 - Every step's role must have exactly one entry in castByRole.
 - Steps run in the array order you give; a step's "needs" must each be produced by
   an EARLIER step's "produces" (or be omitted if nothing upstream produces it).

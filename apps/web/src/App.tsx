@@ -151,6 +151,15 @@ export default function App() {
     }
   };
 
+  /** Appends a client-only message (never persisted server-side) to the transcript of the currently-viewed chat/Agent. */
+  const pushLocalMessage = (agentId: string, role: "user" | "assistant", content: string): void => {
+    if (selectedIdRef.current !== agentId) return;
+    setMessages((current) => [
+      ...current,
+      { id: "local-" + crypto.randomUUID(), agentId, runId: "local", role, content, createdAt: new Date().toISOString() },
+    ]);
+  };
+
   const renameAgent = async (id: string, name: string) => {
     setBusy(true);
     setError(null);
@@ -176,14 +185,7 @@ export default function App() {
     if (!selected || approvingRef.current) return;
     approvingRef.current = true;
     setError(null);
-
-    const askedAt = new Date().toISOString();
-    if (selectedIdRef.current === selected.id) {
-      setMessages((current) => [
-        ...current,
-        { id: "local-" + askedAt, agentId: selected.id, runId: "local", role: "user", content: userText, createdAt: askedAt },
-      ]);
-    }
+    pushLocalMessage(selected.id, "user", userText);
 
     try {
       const task =
@@ -193,26 +195,17 @@ export default function App() {
           .join("\n\n") || selected.name;
       const { job } = await api.approvePlan({ name: selected.name, task, draft });
 
-      if (selectedIdRef.current === selected.id) {
-        const confirmedAt = new Date().toISOString();
-        setMessages((current) => [
-          ...current,
-          {
-            id: "local-" + confirmedAt,
-            agentId: selected.id,
-            runId: "local",
-            role: "assistant",
-            content: "Got it — the Job is starting now. Switching you to the Jobs tab to watch its progress.",
-            createdAt: confirmedAt,
-          },
-        ]);
-      }
+      pushLocalMessage(selected.id, "assistant", "Got it — the Job is starting now. Switching you to the Jobs tab to watch its progress.");
       // Long enough to actually read the confirmation before the view moves.
       await new Promise((resolve) => window.setTimeout(resolve, 700));
       setFocusJobId(job.id);
       setView("jobs");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      // Reported in the chat itself, not the floating banner — the user is
+      // looking at the transcript right after saying "yes", and a banner
+      // outside it is easy to miss. Same channel the success message uses.
+      const message = reason instanceof Error ? reason.message : String(reason);
+      pushLocalMessage(selected.id, "assistant", "That plan couldn't be started: " + message + ". Let me know if you'd like me to adjust it.");
     } finally {
       approvingRef.current = false;
     }
@@ -319,7 +312,12 @@ export default function App() {
       );
       await pollRun(result.run.id, selected.id);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      // In the transcript, not the floating banner — the user is looking at
+      // the conversation, and Playground's composer already cleared the text
+      // they typed, so without this their message just silently disappears.
+      const message = reason instanceof Error ? reason.message : String(reason);
+      pushLocalMessage(selected.id, "user", content);
+      pushLocalMessage(selected.id, "assistant", "That message couldn't be sent: " + message);
       setActiveRun(null);
       await refreshAgents();
     }

@@ -27,15 +27,26 @@ export function Playground({
   onSend: (content: string) => void;
 }) {
   const [prompt, setPrompt] = useState("");
-  const messageEnd = useRef<HTMLDivElement>(null);
+  // Points at whichever article rendered last (a message, the "thinking"
+  // placeholder, or the run-error notice) — registerLastItem is attached to
+  // all of them, and since they render in a fixed order, the true last one's
+  // ref callback always fires last, so this always ends up correct.
+  const lastItemRef = useRef<HTMLElement | null>(null);
+  const registerLastItem = (el: HTMLElement | null) => {
+    if (el) lastItemRef.current = el;
+  };
   const isChat = isOrchestratorAgent(agent);
 
   useEffect(() => {
-    messageEnd.current?.scrollIntoView({ behavior: "smooth" });
+    // block: "start" — not the default "end" a bottom sentinel would give —
+    // so a new reply lands with its own top edge at the top of the visible
+    // area: readable top-down immediately, instead of snapping to its
+    // bottom and cutting off everything above the fold.
+    lastItemRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     // Deliberately not [messages, activeRun]: pollRun (App.tsx) hands back a
     // fresh activeRun object every ~900ms while a run is in flight, and a new
     // array reference on every render — depending on those directly would
-    // re-scroll on every poll tick, snapping the view back to the bottom out
+    // re-scroll on every poll tick, snapping the view back to the top out
     // from under anyone who scrolled up mid-run. length/status only change on
     // genuinely new content or a real state transition.
   }, [messages.length, activeRun?.status]);
@@ -101,7 +112,7 @@ export function Playground({
           messages.map((message) => {
             if (message.role === "user") {
               return (
-                <article className="message message-user" key={message.id}>
+                <article className="message message-user" key={message.id} ref={registerLastItem}>
                   <div className="message-meta">
                     <strong>You</strong>
                     <span>{formatTime(message.createdAt)}</span>
@@ -116,7 +127,7 @@ export function Playground({
             // either a Plan Card or a clean notice — never the raw text.
             const parsed = classifyReply(message.content);
             return (
-              <article className="message message-assistant" key={message.id}>
+              <article className="message message-assistant" key={message.id} ref={registerLastItem}>
                 <div className="message-meta">
                   <strong>{agent.name}</strong>
                   <span>{formatTime(message.createdAt)}</span>
@@ -140,7 +151,7 @@ export function Playground({
           })
         )}
         {running && (
-          <article className="message message-assistant thinking">
+          <article className="message message-assistant thinking" ref={registerLastItem}>
             <div className="message-meta">
               <strong>{agent.name}</strong>
               <span>{isChat ? "thinking" : "working in the Agent workspace"}</span>
@@ -152,12 +163,11 @@ export function Playground({
           </article>
         )}
         {activeRun?.status === "failed" && (
-          <article className="run-error">
+          <article className="run-error" ref={registerLastItem}>
             <strong>Run failed</strong>
             <span>{activeRun.error}</span>
           </article>
         )}
-        <div ref={messageEnd} />
       </div>
 
       <form className="composer" onSubmit={submit}>
