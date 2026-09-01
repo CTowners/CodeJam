@@ -1,4 +1,4 @@
-/** What a chat sees of each existing Agent when drafting a cast (app.ts's /draft-plan route). */
+/** What a chat's instructions embed for each existing Agent it may cast (see agent-service.ts's createAgent). */
 export interface CapabilityCandidate {
   id: string;
   name: string;

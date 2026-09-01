@@ -5,7 +5,8 @@ import { buildJobFromDraft, materializeCast } from "./materialize.js";
 /**
  * Approval: materialize any "new" cast proposals into real Agents, then build
  * the Job. The draft itself now comes from an ordinary chat turn against an
- * orchestrator-kind Agent (app.ts's /draft-plan route), revalidated against
+ * orchestrator-kind Agent — the model decides on its own when to emit the
+ * JSON plan, no separate trigger route — revalidated against
  * response-schema.ts's schema at /api/jobs/approve — this is what turns an
  * approved draft into a real, running Job (AGENTS.md §5).
  */

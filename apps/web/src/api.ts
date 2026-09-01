@@ -88,10 +88,6 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
-  draftPlan: (agentId: string) =>
-    request<{ run: AgentRun; message: Message }>("/api/agents/" + agentId + "/draft-plan", {
-      method: "POST",
-    }),
   approvePlan: (body: { name: string; task: string; draft: DraftedPlan }) =>
     request<{ job: Job }>("/api/jobs/approve", {
       method: "POST",

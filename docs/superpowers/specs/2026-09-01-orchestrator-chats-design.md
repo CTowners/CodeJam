@@ -23,10 +23,17 @@ plan drafting. Two real problems fall out of that:
 - **Conversation reuses the existing Playground pipeline as-is** — send
   message, poll the Run, render the transcript. No new backend machinery for
   the conversational part.
-- **"Draft the plan" is an explicit action**, not inferred from message
-  content. It sends one specially-marked message through the same pipeline;
-  the Orchestrator's instructions only emit strict JSON when that marker is
-  present, plain text otherwise.
+- **The model decides on its own when to draft**, not a manual "Draft the
+  plan" button. Its instructions say: converse in plain text until you
+  understand the task well enough to plan it (or the user explicitly asks
+  you to), then emit ONLY the JSON in the exact contract shape. The
+  candidate Agent list is baked into a chat's instructions once, as a
+  snapshot, when the chat is created — not fetched live per-turn, since
+  there's no longer a dedicated request to hang that fetch off of. The
+  chat header shows a phase indicator (Tell me about the task / Discussing
+  the task / Thinking… / Plan ready — review below), derived from the same
+  classification the transcript itself uses, so it can never disagree with
+  what's rendered below it.
 - **Raw JSON is never rendered as a message, in any code path.** A reply that
   parses as a valid plan renders as a plan card. A reply that doesn't parse as
   JSON at all is a normal conversational reply (e.g. a clarifying question) —
@@ -44,9 +51,10 @@ plan drafting. Two real problems fall out of that:
 ## Sidebar layout
 
 ```
-[+ New Chat]        <- primary action, instant creation, no form
+[+ Chat]             <- primary action, instant creation, no form
+                        default name "Chat <n>", n = existing-chat count + 1
 
-CHATS                <- newest first
+CHATS                <- newest first, click the title to rename
   <chat name>
 
 AGENTS                <- individual specialists a chat can assign work to
@@ -57,23 +65,27 @@ AGENTS                <- individual specialists a chat can assign work to
 ## API surface
 
 - `POST /api/agents` gains an optional `kind: "orchestrator"` — when present,
-  the server ignores any client-supplied instructions and sets them to the
-  canonical Orchestrator instructions itself (never trust the client to send
-  the right text for a system-behavior Agent).
-- `POST /api/agents/:id/draft-plan` (new) — builds the marked trigger message
-  server-side (current live candidate list, not client-supplied) and sends it
-  through the existing `sendMessage` pipeline. Returns the same
-  `{ run, message }` shape a normal message send does.
-- `POST /api/jobs/approve` (new) — `{ name, task, draft }`, calls the existing
-  `Orchestrator.approve` → materialize → persist → `startRun` path, unchanged
-  from today's `approveDraft` minus the by-id draft lookup.
-- Removed: `POST /api/jobs/draft`, `GET /api/jobs/drafts/:draftId`,
-  `POST /api/jobs/drafts/:draftId/approve` — nothing in the new UI calls them.
+  the server ignores any client-supplied instructions/description and
+  builds the canonical instructions itself, with the current Agent roster
+  (excluding other chats) baked in as the candidate list (never trust the
+  client to send the right text for a system-behavior Agent).
+- `PATCH /api/agents/:id` accepts `{ name }` alone for a chat (its
+  description/instructions stay 403'd) — the only way to rename one, since
+  Settings is hidden for chats.
+- `POST /api/jobs/approve` — `{ name, task, draft }`, revalidates `draft`
+  against the same zod schema the model's own replies go through, then
+  calls the existing `Orchestrator.approve` → materialize → persist →
+  `startRun` path.
+- No dedicated "draft" route: drafting is just an ordinary turn through
+  `POST /api/agents/:id/messages`, same as any other chat message.
 
-## Known limitation, going in
+## Known limitations, going in
 
-The client-side check for "does this reply look like a plan" is a lightweight
-structural heuristic (parses as JSON, has the right top-level shape) — not the
-full Zod schema validation the server runs. That's fine: it only gates
-*rendering* (card vs. text), never correctness. The server re-validates for
-real when Approve is actually clicked.
+- The client-side check for "does this reply look like a plan" is a
+  lightweight structural heuristic (parses as JSON, has the right
+  top-level shape) — not the full Zod schema validation the server runs.
+  That's fine: it only gates *rendering* (card vs. text), never
+  correctness. The server re-validates for real when Approve is clicked.
+- A chat's candidate Agent list is a snapshot taken at chat-creation time,
+  not a live query. An Agent created after the chat started won't be
+  offered as a cast candidate for it — start a new chat to pick it up.

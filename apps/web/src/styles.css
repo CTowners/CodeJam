@@ -392,6 +392,7 @@ button {
   min-width: 0;
   height: 100vh;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
   padding: 22px 34px 34px;
@@ -400,22 +401,35 @@ button {
     #f2f1ed;
 }
 
-.config-banner,
-.error-banner {
-  max-width: 1180px;
-  margin: 0 auto 14px;
+/* Same reasoning as .error-banner: system starts null and ConfigBanner
+   shows until the first /api/system response lands, so it's a second
+   in-flow sibling that toggles independently of anything the user does.
+   Floating it keeps .playground's flex: 1 share from ever depending on it. */
+.config-banner {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  width: min(640px, calc(100vw - 40px));
+  margin: 0;
   display: flex;
   align-items: center;
+  gap: 10px;
   border-radius: 10px;
   padding: 10px 13px;
   font-size: 12px;
-}
-
-.config-banner {
-  gap: 10px;
   color: #6c541b;
   background: #fff7d8;
   border: 1px solid #eddda1;
+  box-shadow: 0 12px 30px rgba(108, 84, 27, 0.18);
+}
+
+/* Stack below the config banner on the rare occasion both are showing —
+   the general sibling combinator matches regardless of what's in between
+   them in the DOM (view-tabs sits between them). */
+.config-banner ~ .error-banner {
+  top: 70px;
 }
 
 .config-banner > span {
@@ -441,11 +455,30 @@ button {
   opacity: 0.78;
 }
 
+/* .error-banner sets error state that toggles on nearly every send/draft/
+   approve call — an in-flow banner would grow/shrink .main's flex-column
+   siblings (specifically .playground's flex: 1 share) every time it
+   appeared or disappeared. Floating it takes it out of that flow entirely,
+   so the chat box's size never depends on whether an error is showing. */
 .error-banner {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  width: min(640px, calc(100vw - 40px));
+  margin: 0;
+  display: flex;
+  align-items: center;
   justify-content: space-between;
+  gap: 10px;
+  border-radius: 10px;
+  padding: 10px 13px;
+  font-size: 12px;
   color: #a13f3f;
   background: #fae8e6;
   border: 1px solid #edc4c0;
+  box-shadow: 0 12px 30px rgba(161, 63, 63, 0.18);
 }
 
 .error-banner button {
@@ -687,13 +720,8 @@ textarea:focus {
   font-size: 16px;
 }
 
-.playground-topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.session-info {
+.session-info,
+.phase-indicator {
   color: #777870;
   font-size: 9px;
   border: 1px solid #e0ded6;
@@ -710,6 +738,38 @@ textarea:focus {
   background: #54b98e;
   border-radius: 50%;
   box-shadow: 0 0 0 3px rgba(84, 185, 142, 0.13);
+}
+
+/* There's no manual "draft the plan" step — the model decides on its own
+   when it has enough to plan. This pill is the only signal replacing that
+   button, so its color tracks the phase: neutral while talking, purple
+   while thinking, green once a plan is ready to review. */
+.phase-indicator .pulse {
+  background: #8a8a83;
+  box-shadow: 0 0 0 3px rgba(138, 138, 131, 0.13);
+}
+
+.phase-thinking {
+  color: var(--purple-dark);
+  border-color: #d9d3fb;
+  background: var(--purple-soft);
+}
+
+.phase-thinking .pulse {
+  background: var(--purple);
+  box-shadow: 0 0 0 3px rgba(105, 84, 217, 0.18);
+  animation: pulse 1.2s infinite;
+}
+
+.phase-plan-ready {
+  color: #277756;
+  border-color: #bfe6d5;
+  background: #dcf2e9;
+}
+
+.phase-plan-ready .pulse {
+  background: #33906d;
+  box-shadow: 0 0 0 3px rgba(51, 144, 109, 0.18);
 }
 
 .messages {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Agent, AgentRun, DraftedPlan, Message, SystemInfo } from "../types";
 import { formatTime } from "../lib/format";
-import { classifyReply, isDraftTriggerMessage, isOrchestratorAgent } from "../lib/orchestrator";
+import { CHAT_PHASE_LABEL, classifyReply, deriveChatPhase, isOrchestratorAgent } from "../lib/orchestrator";
 import { PlanCard } from "./PlanCard";
 import { Spinner } from "./Spinner";
 
@@ -18,8 +18,6 @@ export function Playground({
   messages,
   activeRun,
   onSend,
-  onDraftPlan,
-  drafting,
   onApprovePlan,
   approvingPlanFor,
 }: {
@@ -29,8 +27,6 @@ export function Playground({
   messages: Message[];
   activeRun: AgentRun | null;
   onSend: (content: string) => void;
-  onDraftPlan: () => void;
-  drafting: boolean;
   onApprovePlan: (draft: DraftedPlan, messageId: string) => void;
   /** The message id of the plan card currently being approved, if any. */
   approvingPlanFor: string | null;
@@ -51,6 +47,7 @@ export function Playground({
 
   const running = activeRun != null && ["queued", "running"].includes(activeRun.status);
   const disabled = agent.status === "stopped" || agent.status === "busy" || running;
+  const phase = deriveChatPhase(messages, running);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -60,8 +57,6 @@ export function Playground({
     onSend(content);
   };
 
-  const visibleMessages = messages.filter((message) => !isDraftTriggerMessage(message.content));
-
   return (
     <section className="playground">
       <div className="playground-topbar">
@@ -69,25 +64,21 @@ export function Playground({
           <span className="eyebrow">{isChat ? "Chat" : "Playground"}</span>
           <h2>{isChat ? "Plan a Job with " + agent.name : "Build something with your Agent"}</h2>
         </div>
-        <div className="playground-topbar-actions">
-          {isChat && (
-            <button
-              className="button button-primary"
-              onClick={onDraftPlan}
-              disabled={disabled || drafting}
-            >
-              {drafting ? "Drafting…" : "Draft the plan"}
-            </button>
-          )}
+        {isChat ? (
+          <div className={"phase-indicator phase-" + phase}>
+            <span className="pulse" />
+            {CHAT_PHASE_LABEL[phase]}
+          </div>
+        ) : (
           <div className="session-info">
             <span className="pulse" />
             {agent.codexThreadId ? "Session connected" : "New session"}
           </div>
-        </div>
+        )}
       </div>
 
       <div className="messages">
-        {visibleMessages.length === 0 && !activeRun ? (
+        {messages.length === 0 && !activeRun ? (
           <div className="welcome">
             <div className="welcome-orbit">
               <div>⌁</div>
@@ -95,8 +86,8 @@ export function Playground({
             <h3>{isChat ? "What should this Job accomplish?" : "What should " + agent.name + " build?"}</h3>
             <p>
               {isChat
-                ? "Describe the task, ask questions, and refine it together. When you're ready, click " +
-                  "“Draft the plan” to see an ordered Plan and proposed cast — nothing runs until you approve it."
+                ? "Describe the task, ask questions, and refine it together. Once I understand it well " +
+                  "enough, I'll draft an ordered Plan and proposed cast right here — nothing runs until you approve it."
                 : "The Agent can inspect files, write code, run commands, and continue the same " +
                   "Codex session across messages."}
             </p>
@@ -112,7 +103,7 @@ export function Playground({
             )}
           </div>
         ) : (
-          visibleMessages.map((message) => {
+          messages.map((message) => {
             if (message.role === "user") {
               return (
                 <article className="message message-user" key={message.id}>

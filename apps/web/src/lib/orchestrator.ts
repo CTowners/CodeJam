@@ -1,16 +1,8 @@
-import type { Agent, DraftedPlan } from "../types";
-
-/** Mirrors apps/server/src/orchestrator/instructions.ts's DRAFT_PLAN_MARKER. */
-export const DRAFT_PLAN_MARKER = "[[DRAFT_PLAN]]";
+import type { Agent, DraftedPlan, Message } from "../types";
 
 /** A "chat" is a real Agent flagged with kind — never inferred from its (user-renamable) name. */
 export function isOrchestratorAgent(agent: Pick<Agent, "kind">): boolean {
   return agent.kind === "orchestrator";
-}
-
-/** True for the one specially-marked outbound message the UI sends to trigger drafting. */
-export function isDraftTriggerMessage(content: string): boolean {
-  return content.startsWith(DRAFT_PLAN_MARKER);
 }
 
 /**
@@ -74,4 +66,27 @@ export function classifyReply(content: string): ParsedReply {
     return { kind: "plan", draft: parsed };
   }
   return { kind: "invalid-plan-attempt" };
+}
+
+export type ChatPhase = "starting" | "discussing" | "thinking" | "plan-ready";
+
+export const CHAT_PHASE_LABEL: Record<ChatPhase, string> = {
+  starting: "Tell me about the task",
+  discussing: "Discussing the task",
+  thinking: "Thinking…",
+  "plan-ready": "Plan ready — review below",
+};
+
+/**
+ * There's no explicit "draft the plan" step anymore — the model decides on
+ * its own when it has enough to plan, and emits the JSON on that turn. This
+ * derives a phase label from that same signal (classifyReply) instead of any
+ * separate state, so the indicator can never disagree with what's actually
+ * rendered below it.
+ */
+export function deriveChatPhase(messages: readonly Pick<Message, "role" | "content">[], running: boolean): ChatPhase {
+  if (running) return "thinking";
+  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  if (lastAssistant && classifyReply(lastAssistant.content).kind === "plan") return "plan-ready";
+  return messages.length === 0 ? "starting" : "discussing";
 }

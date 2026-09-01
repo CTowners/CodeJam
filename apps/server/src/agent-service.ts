@@ -6,7 +6,7 @@ import type { TurnResult, TurnRunner } from "./contracts.js";
 import { HttpError, RunCancelledError } from "./errors.js";
 import {
   ORCHESTRATOR_CHAT_DESCRIPTION,
-  ORCHESTRATOR_CHAT_INSTRUCTIONS,
+  buildOrchestratorChatInstructions,
 } from "./orchestrator/instructions.js";
 import { JsonStore } from "./store.js";
 import type {
@@ -73,7 +73,18 @@ export class AgentService implements TurnRunner {
     // that Agent's instructions/description are — a system-behavior Agent's
     // text is the server's to own, not something to trust over the wire.
     const isOrchestrator = input.kind === "orchestrator";
-    const instructions = isOrchestrator ? ORCHESTRATOR_CHAT_INSTRUCTIONS : (input.instructions?.trim() ?? "");
+    const instructions = isOrchestrator
+      ? buildOrchestratorChatInstructions(
+          this.store
+            .snapshot()
+            .agents.filter((candidate) => candidate.kind !== "orchestrator")
+            .map((candidate) => ({
+              id: candidate.id,
+              name: candidate.name,
+              capabilitySummary: candidate.capabilitySummary,
+            })),
+        )
+      : (input.instructions?.trim() ?? "");
     const agent: Agent = {
       id,
       name: input.name.trim(),

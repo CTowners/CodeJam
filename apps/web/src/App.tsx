@@ -10,7 +10,7 @@ import { Playground } from "./components/Playground";
 import { CreateAgentModal } from "./components/CreateAgentModal";
 import { EmptyAgentState } from "./components/EmptyAgentState";
 import { JobScreen } from "./components/job/JobScreen";
-import { isDraftTriggerMessage, isOrchestratorAgent } from "./lib/orchestrator";
+import { isOrchestratorAgent } from "./lib/orchestrator";
 
 type View = "playground" | "jobs";
 
@@ -35,7 +35,6 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
-  const [drafting, setDrafting] = useState(false);
   const [approvingPlanFor, setApprovingPlanFor] = useState<string | null>(null);
   const [focusJobId, setFocusJobId] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
@@ -165,28 +164,6 @@ export default function App() {
     }
   };
 
-  const draftPlan = async () => {
-    if (!selected) return;
-    setDrafting(true);
-    setError(null);
-    try {
-      const result = await api.draftPlan(selected.id);
-      if (selectedIdRef.current === selected.id) {
-        setMessages((current) => [...current, result.message]);
-        setActiveRun(result.run);
-      }
-      setAgents((current) =>
-        current.map((agent) => (agent.id === selected.id ? { ...agent, status: "busy" } : agent)),
-      );
-      await pollRun(result.run.id, selected.id);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-      await refreshAgents();
-    } finally {
-      setDrafting(false);
-    }
-  };
-
   const approvePlan = async (draft: DraftedPlan, messageId: string) => {
     if (!selected) return;
     setApprovingPlanFor(messageId);
@@ -194,7 +171,7 @@ export default function App() {
     try {
       const task =
         messages
-          .filter((message) => message.role === "user" && !isDraftTriggerMessage(message.content))
+          .filter((message) => message.role === "user")
           .map((message) => message.content)
           .join("\n\n") || selected.name;
       const { job } = await api.approvePlan({ name: selected.name, task, draft });
@@ -405,8 +382,6 @@ export default function App() {
               messages={messages}
               activeRun={activeRun}
               onSend={sendMessage}
-              onDraftPlan={() => void draftPlan()}
-              drafting={drafting}
               onApprovePlan={(draft, messageId) => void approvePlan(draft, messageId)}
               approvingPlanFor={approvingPlanFor}
             />

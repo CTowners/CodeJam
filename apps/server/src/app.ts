@@ -9,7 +9,6 @@ import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { jobRoutes } from "./job-routes.js";
 import type { JobService } from "./job-service.js";
-import { buildDraftTriggerMessage } from "./orchestrator/instructions.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -145,23 +144,6 @@ export async function createApp(
       throw new HttpError(403, "Chats can't be deleted");
     }
     return service.deleteAgent(id);
-  });
-
-  app.post("/api/agents/:id/draft-plan", async (request) => {
-    const { id } = agentIdParams.parse(request.params);
-    const agent = service.getAgent(id);
-    if (agent.kind !== "orchestrator") {
-      throw new HttpError(400, "Only a chat can draft a plan");
-    }
-    // The live candidate list, read server-side — never trust a client-supplied
-    // one, since it's what the drafted cast actually gets validated against.
-    const candidates = service
-      .listAgents()
-      .filter((candidate) => candidate.kind !== "orchestrator")
-      .map((candidate) => ({ id: candidate.id, name: candidate.name, capabilitySummary: candidate.capabilitySummary }));
-    const triggerMessage = buildDraftTriggerMessage(candidates);
-    const result = await service.sendMessage(id, triggerMessage);
-    return { run: result.run, message: result.message };
   });
 
   app.post("/api/agents/:id/start", async (request) => {

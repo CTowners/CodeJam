@@ -161,46 +161,4 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
-  it("only lets a chat (kind: orchestrator) draft a plan, and sends the trigger message through sendMessage", async () => {
-    let sentPrompt: string | undefined;
-    const chatService = {
-      listAgents: () => [
-        { id: "impl-1", name: "Implementer", kind: undefined, capabilitySummary: "writes code" },
-      ],
-      systemInfo: async () => ({}),
-      getAgent: (id: string) => ({ id, name: "Planning session", kind: "orchestrator", status: "ready" }),
-      sendMessage: async (_id: string, prompt: string) => {
-        sentPrompt = prompt;
-        return { run: { id: "run-1" }, message: { id: "msg-1", content: prompt } };
-      },
-    } as unknown as AgentService;
-
-    const app = await createApp(loadConfig({ NODE_ENV: "test" }), chatService, jobService);
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/agents/00000000-0000-0000-0000-000000000000/draft-plan",
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(sentPrompt).toMatch(/\[\[DRAFT_PLAN\]\]/);
-    expect(sentPrompt).toMatch(/Implementer/);
-    await app.close();
-  });
-
-  it("refuses to draft a plan against an ordinary Agent", async () => {
-    const ordinaryService = {
-      listAgents: () => [],
-      systemInfo: async () => ({}),
-      getAgent: (id: string) => ({ id, name: "Implementer", status: "ready" }),
-    } as unknown as AgentService;
-
-    const app = await createApp(loadConfig({ NODE_ENV: "test" }), ordinaryService, jobService);
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/agents/00000000-0000-0000-0000-000000000000/draft-plan",
-    });
-
-    expect(response.statusCode).toBe(400);
-    await app.close();
-  });
 });

@@ -21,8 +21,9 @@ const logFailure = (context: string, error: unknown): void => {
 /**
  * Owns the Job lifecycle: approve (materialize + persist) -> run (Coordinator)
  * -> cancel. Drafting itself now happens as an ordinary chat turn against an
- * orchestrator-kind Agent (app.ts's /draft-plan route) — this service only
- * takes over once a plan already exists and the user has approved it.
+ * orchestrator-kind Agent — the model decides on its own when to emit the
+ * JSON plan — this service only takes over once a plan already exists and
+ * the user has approved it.
  */
 export class JobService {
   /** jobId -> cancel handle, populated once a Job's Job row (and id) exists. */
