@@ -82,12 +82,12 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
-  it("refuses to delete the Orchestrator Agent, at the request boundary not just the UI", async () => {
+  it("refuses to delete a chat (kind: orchestrator), at the request boundary not just the UI", async () => {
     let deleteCalled = false;
     const protectedService = {
       listAgents: () => [],
       systemInfo: async () => ({}),
-      getAgent: (id: string) => ({ id, name: "Orchestrator", status: "ready" }),
+      getAgent: (id: string) => ({ id, name: "Planning session", kind: "orchestrator", status: "ready" }),
       deleteAgent: async () => {
         deleteCalled = true;
         return { archivedWorkspace: "/should/never/be/called" };
@@ -101,7 +101,7 @@ describe("HTTP boundary", () => {
     });
 
     expect(response.statusCode).toBe(403);
-    expect(response.json().error).toMatch(/Orchestrator Agent/);
+    expect(response.json().error).toMatch(/Chats can't be deleted/);
     expect(deleteCalled).toBe(false);
     await app.close();
   });
@@ -128,4 +128,37 @@ describe("HTTP boundary", () => {
     expect(deleteCalled).toBe(true);
     await app.close();
   });
+
+  it("refuses to change a chat's description/instructions via PATCH, but still allows renaming it", async () => {
+    let updateCalled = false;
+    const protectedService = {
+      listAgents: () => [],
+      systemInfo: async () => ({}),
+      getAgent: (id: string) => ({ id, name: "Planning session", kind: "orchestrator", status: "ready" }),
+      updateAgent: async (_id: string, input: unknown) => {
+        updateCalled = true;
+        return { id: _id, ...(input as object) };
+      },
+    } as unknown as AgentService;
+
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), protectedService, jobService);
+
+    const blocked = await app.inject({
+      method: "PATCH",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000",
+      payload: { instructions: "do something else" },
+    });
+    expect(blocked.statusCode).toBe(403);
+    expect(updateCalled).toBe(false);
+
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000",
+      payload: { name: "Renamed chat" },
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(updateCalled).toBe(true);
+    await app.close();
+  });
+
 });

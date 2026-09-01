@@ -6,15 +6,17 @@ export function Sidebar({
   selectedId,
   system,
   onSelect,
+  onNewChat,
   onCreateClick,
 }: {
   agents: Agent[];
   selectedId: string | null;
   system: SystemInfo | null;
   onSelect: (id: string) => void;
+  onNewChat: () => void;
   onCreateClick: () => void;
 }) {
-  const orchestrator = agents.find(isOrchestratorAgent);
+  const chats = agents.filter(isOrchestratorAgent).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const yourAgents = agents.filter((agent) => !isOrchestratorAgent(agent));
 
   return (
@@ -31,34 +33,43 @@ export function Sidebar({
         </div>
       </div>
 
-      <button className="button button-primary create-button" onClick={onCreateClick}>
-        <span>＋</span> Create Agent
+      <button className="button button-primary create-button" onClick={onNewChat}>
+        <span>＋</span> Chat
       </button>
 
-      {orchestrator && (
-        <>
-          <div className="sidebar-label">
-            <span>System</span>
-          </div>
-          <nav className="agent-list agent-list-system">
-            <button
-              className={"agent-card agent-card-system " + (orchestrator.id === selectedId ? "selected" : "")}
-              onClick={() => onSelect(orchestrator.id)}
-            >
-              <div className="agent-avatar agent-avatar-system">{orchestrator.name.slice(0, 1).toUpperCase()}</div>
-              <div className="agent-card-copy">
-                <strong>{orchestrator.name}</strong>
-                <span>Drafts Plans for Jobs</span>
-              </div>
-              <span className={"mini-dot mini-" + orchestrator.status} />
-            </button>
-          </nav>
-        </>
-      )}
-
       <div className="sidebar-label">
-        <span>Your Agents</span>
+        <span>Chats</span>
+        <span>{chats.length}</span>
+      </div>
+      <nav className="agent-list agent-list-chats">
+        {chats.map((chat) => (
+          <button
+            className={"agent-card agent-card-chat " + (chat.id === selectedId ? "selected" : "")}
+            key={chat.id}
+            onClick={() => onSelect(chat.id)}
+          >
+            <div className="agent-avatar agent-avatar-chat">💬</div>
+            <div className="agent-card-copy">
+              <strong>{chat.name}</strong>
+              <span>Plans and casts one Job</span>
+            </div>
+            <span className={"mini-dot mini-" + chat.status} />
+          </button>
+        ))}
+        {chats.length === 0 && (
+          <div className="empty-sidebar">
+            <span>◇</span>
+            Start a new chat to plan your first Job.
+          </div>
+        )}
+      </nav>
+
+      <div className="sidebar-label sidebar-label-agents">
+        <span>Agents</span>
         <span>{yourAgents.length}</span>
+        <button className="button button-ghost button-small create-agent-button" onClick={onCreateClick}>
+          <span>＋</span> Create Agent
+        </button>
       </div>
       <nav className="agent-list">
         {yourAgents.map((agent) => (

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentFormValues, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentFormValues, AgentRun, DraftedPlan, Message, SystemInfo } from "./types";
 import { AuthGate, ConnectingScreen } from "./components/AuthScreen";
 import { Sidebar } from "./components/Sidebar";
 import { ConfigBanner } from "./components/ConfigBanner";
@@ -10,6 +10,7 @@ import { Playground } from "./components/Playground";
 import { CreateAgentModal } from "./components/CreateAgentModal";
 import { EmptyAgentState } from "./components/EmptyAgentState";
 import { JobScreen } from "./components/job/JobScreen";
+import { classifyReply, isAffirmative, isOrchestratorAgent } from "./lib/orchestrator";
 
 type View = "playground" | "jobs";
 
@@ -34,6 +35,8 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
+  const [focusJobId, setFocusJobId] = useState<string | null>(null);
+  const approvingRef = useRef(false);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
@@ -130,6 +133,84 @@ export default function App() {
     }
   };
 
+  const createNewChat = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      // Chats can't be deleted, so a simple count is a stable, monotonically
+      // increasing "next number" regardless of how existing chats were renamed.
+      const nextNumber = agents.filter(isOrchestratorAgent).length + 1;
+      const { agent } = await api.createAgent({ name: "Chat " + nextNumber, kind: "orchestrator" });
+      await refreshAgents();
+      setSelectedId(agent.id);
+      setView("playground");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /** Appends a client-only message (never persisted server-side) to the transcript of the currently-viewed chat/Agent. */
+  const pushLocalMessage = (agentId: string, role: "user" | "assistant", content: string): void => {
+    if (selectedIdRef.current !== agentId) return;
+    setMessages((current) => [
+      ...current,
+      { id: "local-" + crypto.randomUUID(), agentId, runId: "local", role, content, createdAt: new Date().toISOString() },
+    ]);
+  };
+
+  const renameAgent = async (id: string, name: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateAgent(id, { name });
+      await refreshAgents();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * The approval path a plain "yes" reaching here takes — deliberately never
+   * sent to the model as a turn. The model has no way of knowing whether the
+   * approvePlan call below actually succeeds, so letting it narrate a guess
+   * ("the Coordinator will now...") produces exactly the confusing, often-
+   * wrong story this avoids; the confirmation the user sees is generated
+   * here, from the real outcome, not predicted by the model.
+   */
+  const approvePlanFromChat = async (userText: string, draft: DraftedPlan) => {
+    if (!selected || approvingRef.current) return;
+    approvingRef.current = true;
+    setError(null);
+    pushLocalMessage(selected.id, "user", userText);
+
+    try {
+      const task =
+        messages
+          .filter((message) => message.role === "user")
+          .map((message) => message.content)
+          .join("\n\n") || selected.name;
+      const { job } = await api.approvePlan({ name: selected.name, task, draft });
+
+      pushLocalMessage(selected.id, "assistant", "Got it — the Job is starting now. Switching you to the Jobs tab to watch its progress.");
+      // Long enough to actually read the confirmation before the view moves.
+      await new Promise((resolve) => window.setTimeout(resolve, 700));
+      setFocusJobId(job.id);
+      setView("jobs");
+    } catch (reason) {
+      // Reported in the chat itself, not the floating banner — the user is
+      // looking at the transcript right after saying "yes", and a banner
+      // outside it is easy to miss. Same channel the success message uses.
+      const message = reason instanceof Error ? reason.message : String(reason);
+      pushLocalMessage(selected.id, "assistant", "That plan couldn't be started: " + message + ". Let me know if you'd like me to adjust it.");
+    } finally {
+      approvingRef.current = false;
+    }
+  };
+
   const saveAgent = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!selected) return;
@@ -203,6 +284,21 @@ export default function App() {
   const sendMessage = async (content: string) => {
     if (!selected) return;
     setError(null);
+
+    // No "Approve & Run" button — running the plan is just saying so. Only
+    // checked when the immediately preceding assistant reply was a drafted
+    // plan, so an unrelated "ok" earlier in the conversation never gets
+    // mistaken for approval. When it matches, this returns without ever
+    // calling the model — see approvePlanFromChat's doc comment for why.
+    if (isOrchestratorAgent(selected) && isAffirmative(content)) {
+      const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+      const parsed = lastAssistant ? classifyReply(lastAssistant.content) : null;
+      if (parsed?.kind === "plan") {
+        await approvePlanFromChat(content, parsed.draft);
+        return;
+      }
+    }
+
     try {
       const result = await api.sendMessage(selected.id, content);
       if (selectedIdRef.current === selected.id) {
@@ -216,7 +312,12 @@ export default function App() {
       );
       await pollRun(result.run.id, selected.id);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      // In the transcript, not the floating banner — the user is looking at
+      // the conversation, and Playground's composer already cleared the text
+      // they typed, so without this their message just silently disappears.
+      const message = reason instanceof Error ? reason.message : String(reason);
+      pushLocalMessage(selected.id, "user", content);
+      pushLocalMessage(selected.id, "assistant", "That message couldn't be sent: " + message);
       setActiveRun(null);
       await refreshAgents();
     }
@@ -268,6 +369,7 @@ export default function App() {
           setView("playground");
           setSelectedId(id);
         }}
+        onNewChat={() => void createNewChat()}
         onCreateClick={() => {
           setForm(emptyForm);
           setShowCreate(true);
@@ -297,7 +399,7 @@ export default function App() {
         )}
 
         {view === "jobs" ? (
-          <JobScreen agents={agents} />
+          <JobScreen agents={agents} focusJobId={focusJobId} onFocusHandled={() => setFocusJobId(null)} />
         ) : selected ? (
           <>
             <AgentHeader
@@ -306,9 +408,10 @@ export default function App() {
               onToggleSettings={() => setShowSettings((value) => !value)}
               onToggleAgent={toggleAgent}
               onDelete={deleteAgent}
+              onRename={(name) => void renameAgent(selected.id, name)}
             />
 
-            {showSettings && (
+            {showSettings && !isOrchestratorAgent(selected) && (
               <SettingsPanel
                 form={form}
                 busy={busy}
@@ -321,6 +424,7 @@ export default function App() {
 
             <Playground
               agent={selected}
+              agents={agents}
               system={system}
               messages={messages}
               activeRun={activeRun}

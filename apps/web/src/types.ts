@@ -8,6 +8,8 @@ export interface Agent {
   instructions: string;
   /** Derived from instructions server-side, regenerated on change. Display only. */
   capabilitySummary: string;
+  /** "orchestrator" marks a planning chat rather than a work Agent. Undefined for ordinary Agents. */
+  kind?: "orchestrator";
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
@@ -90,14 +92,6 @@ export type CastProposal =
 export interface DraftedPlan {
   plan: Plan;
   castByRole: Partial<Record<AgentRole, CastProposal>>;
-}
-
-export interface JobDraft {
-  draftId: string;
-  name: string;
-  task: string;
-  draft: DraftedPlan;
-  createdAt: string;
 }
 
 export interface Job {

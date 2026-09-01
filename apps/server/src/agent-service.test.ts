@@ -101,6 +101,37 @@ describe("Agent lifecycle", () => {
     expect(service.listAgents()).toHaveLength(0);
   });
 
+  it("forces the canonical instructions/description for kind: orchestrator, ignoring any client-supplied text", async () => {
+    const service = await makeService();
+    const chat = await service.createAgent({
+      name: "My planning chat",
+      kind: "orchestrator",
+      description: "client-supplied, should be ignored",
+      instructions: "client-supplied, should be ignored",
+    });
+
+    expect(chat.kind).toBe("orchestrator");
+    expect(chat.name).toBe("My planning chat");
+    expect(chat.instructions).not.toContain("client-supplied");
+    expect(chat.instructions).toMatch(/castByRole/);
+    expect(chat.description).not.toContain("client-supplied");
+
+    const ordinary = await service.createAgent({ name: "Ordinary Agent", instructions: "do work" });
+    expect(ordinary.kind).toBeUndefined();
+  });
+
+  it("bakes the current Agent roster into a chat's instructions as a snapshot at creation time", async () => {
+    const service = await makeService();
+    await service.createAgent({ name: "Implementer", instructions: "writes code" });
+
+    const chat = await service.createAgent({ name: "Planning chat", kind: "orchestrator" });
+    expect(chat.instructions).toContain("Implementer");
+
+    // An Agent created after the chat isn't retroactively added to its snapshot.
+    await service.createAgent({ name: "Reviewer", instructions: "reviews code" });
+    expect(chat.instructions).not.toContain("Reviewer");
+  });
+
   it("persists a playground conversation", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Coder" });

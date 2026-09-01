@@ -1,72 +1,18 @@
-import { validatePlan } from "../coordinator/plan-validation.js";
 import type { DraftedPlan, Job } from "../contracts.js";
-import { HttpError } from "../errors.js";
 import type { AgentCreator } from "./materialize.js";
 import { buildJobFromDraft, materializeCast } from "./materialize.js";
-import type { CapabilityCandidate, PlanDrafter } from "./plan-drafter.js";
-
-const MAX_DRAFT_ATTEMPTS = 2;
-
-export class OrchestratorDraftError extends Error {
-  constructor(
-    message: string,
-    public readonly attempts: number,
-  ) {
-    super(message);
-    this.name = "OrchestratorDraftError";
-  }
-}
 
 /**
- * Drafts a Plan for a task, casting each Step against candidate Agents'
- * capabilitySummary — the judgement call, made once per Job (AGENTS.md §5). A
- * draft that fails plan-validation (overlapping produces, out-of-order needs) is
- * sent back to the drafter once with the errors as guidance before giving up,
- * the same bounded-retry instinct the Coordinator applies to a Step's output.
+ * Approval: materialize any "new" cast proposals into real Agents, then build
+ * the Job. The draft itself now comes from an ordinary chat turn against an
+ * orchestrator-kind Agent — the model decides on its own when to emit the
+ * JSON plan, no separate trigger route — revalidated against
+ * response-schema.ts's schema at /api/jobs/approve — this is what turns an
+ * approved draft into a real, running Job (AGENTS.md §5).
  */
-export class Orchestrator {
-  constructor(private readonly drafter: PlanDrafter) {}
-
-  async draftPlan(task: string, candidates: readonly CapabilityCandidate[]): Promise<DraftedPlan> {
-    let guidance: string | undefined;
-    let lastErrors: string[] = [];
-
-    for (let attempt = 1; attempt <= MAX_DRAFT_ATTEMPTS; attempt += 1) {
-      let draft: DraftedPlan;
-      try {
-        draft = await this.drafter.draft(task, candidates, guidance);
-      } catch (error) {
-        // The drafting turn itself failed (Ark unreachable, the Orchestrator Agent
-        // busy/stopped, malformed model output) — distinct from an *invalid plan*,
-        // which the loop below retries with guidance. Retrying this blindly could
-        // hammer an Agent that's stopped and will never un-stop itself on its own,
-        // so this fails fast with a clear, typed reason instead of letting a raw
-        // error escape uncaught and surface as an opaque 500.
-        const message = error instanceof Error ? error.message : String(error);
-        throw new HttpError(503, `Could not draft a plan: ${message}`);
-      }
-      lastErrors = validatePlan(draft.plan);
-      if (lastErrors.length === 0) {
-        return draft;
-      }
-      guidance = lastErrors.join("; ");
-    }
-
-    throw new OrchestratorDraftError(
-      `Drafted plan was invalid after ${MAX_DRAFT_ATTEMPTS} attempt(s): ${lastErrors.join("; ")}`,
-      MAX_DRAFT_ATTEMPTS,
-    );
-  }
-
-  /**
-   * Approval: materialize any "new" cast proposals into real Agents, then build
-   * the Job. Static — approval doesn't need a PlanDrafter, only draftPlan() does
-   * — so a caller that only has a drafted plan in hand (no Orchestrator instance
-   * around) can still go through the one tested approval path instead of
-   * reimplementing it inline.
-   */
-  static async approve(name: string, task: string, draft: DraftedPlan, creator: AgentCreator): Promise<Job> {
+export const Orchestrator = {
+  async approve(name: string, task: string, draft: DraftedPlan, creator: AgentCreator): Promise<Job> {
     const castByRole = await materializeCast(draft, creator);
     return buildJobFromDraft(name, task, draft, castByRole);
-  }
-}
+  },
+};

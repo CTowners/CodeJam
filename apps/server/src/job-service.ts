@@ -3,31 +3,14 @@ import path from "node:path";
 import type { AgentService } from "./agent-service.js";
 import { Coordinator } from "./coordinator/coordinator.js";
 import { FileCourier } from "./coordinator/file-courier.js";
+import { validatePlan } from "./coordinator/plan-validation.js";
 import type { AppConfig } from "./config.js";
-import type { CoordinationEvent, DraftedPlan, Job, JobMessage } from "./contracts.js";
+import type { AgentRole, CastProposal, CoordinationEvent, DraftedPlan, Job, JobMessage } from "./contracts.js";
 import { COORDINATION_LIMITS } from "./contracts.js";
 import { HttpError } from "./errors.js";
-import { ModelPlanDrafter } from "./orchestrator/model-plan-drafter.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
 import type { JsonStore } from "./store.js";
 import type { Database } from "./types.js";
-
-/** Exported so app.ts can refuse to delete this Agent at the request boundary, not just in the UI. */
-export const ORCHESTRATOR_AGENT_NAME = "Orchestrator";
-const ORCHESTRATOR_INSTRUCTIONS = [
-  "You draft Plans for the Coordinator to execute — you never touch files or run",
-  "code yourself. Given a task and a list of candidate Agents (each with an id,",
-  "name, and capabilitySummary), respond with a Plan and a proposed cast, in the",
-  "exact JSON shape you're given in each prompt. Nothing else.",
-].join(" ");
-
-export interface JobDraft {
-  draftId: string;
-  name: string;
-  task: string;
-  draft: DraftedPlan;
-  createdAt: string;
-}
 
 const now = () => new Date().toISOString();
 
@@ -36,29 +19,22 @@ const logFailure = (context: string, error: unknown): void => {
 };
 
 /**
- * Owns the Job lifecycle: draft (Orchestrator) -> approve (materialize + persist)
- * -> run (Coordinator) -> cancel. Drafts are in-memory only — nothing is committed
- * until approval, so a server restart before that just means re-drafting; the Job
- * itself, once approved, is what's persisted (AGENTS.md §5/§6).
+ * Owns the Job lifecycle: approve (materialize + persist) -> run (Coordinator)
+ * -> cancel. Drafting itself now happens as an ordinary chat turn against an
+ * orchestrator-kind Agent — the model decides on its own when to emit the
+ * JSON plan — this service only takes over once a plan already exists and
+ * the user has approved it.
  */
 export class JobService {
-  private readonly drafts = new Map<string, JobDraft>();
   /** jobId -> cancel handle, populated once a Job's Job row (and id) exists. */
   private readonly cancelHandles = new Map<string, () => void>();
   /**
-   * The one-Job-at-a-time gate. Reserved synchronously in approveDraft, before
+   * The one-Job-at-a-time gate. Reserved synchronously in approvePlan, before
    * any await — the same atomic check-and-flip AgentService.runTurn uses for its
    * own busy check, so two approvals fired close together can't both pass the
    * check before either reserves its slot.
    */
   private runningCount = 0;
-  /**
-   * Memoized in-flight promise, not just the resolved id: two concurrent
-   * draftJob() calls before the Orchestrator Agent exists yet must share the
-   * same creation attempt, or both can independently decide it's missing and
-   * each create their own.
-   */
-  private orchestratorAgentIdPromise: Promise<string> | null = null;
 
   constructor(
     private readonly config: AppConfig,
@@ -116,50 +92,61 @@ export class JobService {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  getDraft(draftId: string): JobDraft {
-    const draft = this.drafts.get(draftId);
-    if (!draft) {
-      throw new HttpError(404, "Draft not found");
+  /**
+   * Takes an already-drafted (client-parsed, server-revalidated-via-approve)
+   * plan directly, rather than looking one up by id — the plan came from a
+   * chat turn, not a stored server-side draft.
+   */
+  async approvePlan(name: string, task: string, draft: DraftedPlan): Promise<Job> {
+    const errors = [...validatePlan(draft.plan), ...this.validateCast(draft.castByRole)];
+    if (errors.length > 0) {
+      throw new HttpError(400, `Invalid plan: ${errors.join("; ")}`);
     }
-    return draft;
-  }
-
-  async draftJob(name: string, task: string): Promise<JobDraft> {
-    const orchestratorAgentId = await this.getOrchestratorAgentId();
-    const orchestrator = new Orchestrator(new ModelPlanDrafter(this.agents, orchestratorAgentId));
-    const candidates = this.agents
-      .listAgents()
-      .filter((agent) => agent.id !== orchestratorAgentId)
-      .map((agent) => ({ id: agent.id, name: agent.name, capabilitySummary: agent.capabilitySummary }));
-
-    const draft = await orchestrator.draftPlan(task, candidates);
-    const jobDraft: JobDraft = { draftId: randomUUID(), name, task, draft, createdAt: now() };
-    this.drafts.set(jobDraft.draftId, jobDraft);
-    return jobDraft;
-  }
-
-  async approveDraft(draftId: string): Promise<Job> {
     if (this.runningCount >= COORDINATION_LIMITS.maxConcurrentJobs) {
       throw new HttpError(409, "A Job is already running — only one runs at a time");
     }
     // Reserve the slot now, synchronously, before any await below — this is the
-    // whole fix: nothing here can interleave with another approveDraft() call
+    // whole fix: nothing here can interleave with another approvePlan() call
     // until we actually yield, so the check-then-reserve above is atomic.
     this.runningCount += 1;
     try {
-      const pending = this.getDraft(draftId);
-      const job = await Orchestrator.approve(pending.name, pending.task, pending.draft, this.agents);
+      const job = await Orchestrator.approve(name, task, draft, this.agents);
 
       await this.store.mutate((database) => {
         database.jobs.push(job);
       });
-      this.drafts.delete(draftId);
       this.startRun(job);
       return job;
     } catch (error) {
       this.runningCount -= 1; // never actually started a run — release the slot
       throw error;
     }
+  }
+
+  /**
+   * The schema alone can't catch this: `agentId` is typed as a non-empty
+   * string, so a hallucinated id (the model was supposed to copy one from the
+   * candidate list, but doesn't always) still parses fine. Left unchecked, it
+   * would only surface as a 404 deep inside Coordinator once the Job actually
+   * tries to run that Step — this rejects it upfront, at approval, with a
+   * clear reason instead.
+   */
+  private validateCast(castByRole: Partial<Record<AgentRole, CastProposal>>): string[] {
+    const errors: string[] = [];
+    for (const [role, proposal] of Object.entries(castByRole)) {
+      if (!proposal || proposal.kind !== "existing") continue;
+      let agent;
+      try {
+        agent = this.agents.getAgent(proposal.agentId);
+      } catch {
+        errors.push(`Role "${role}" is cast to an Agent id that doesn't exist: "${proposal.agentId}"`);
+        continue;
+      }
+      if (agent.kind === "orchestrator") {
+        errors.push(`Role "${role}" is cast to a chat, not a work Agent: "${proposal.agentId}"`);
+      }
+    }
+    return errors;
   }
 
   /**
@@ -240,29 +227,5 @@ export class JobService {
         this.cancelHandles.delete(job.id);
         this.runningCount -= 1;
       });
-  }
-
-  private getOrchestratorAgentId(): Promise<string> {
-    if (!this.orchestratorAgentIdPromise) {
-      this.orchestratorAgentIdPromise = (async () => {
-        const existing = this.agents.listAgents().find((agent) => agent.name === ORCHESTRATOR_AGENT_NAME);
-        if (existing) return existing.id;
-        const created = await this.agents.createAgent({
-          name: ORCHESTRATOR_AGENT_NAME,
-          description: "System Agent that drafts Plans for Jobs. Created automatically — do not delete.",
-          instructions: ORCHESTRATOR_INSTRUCTIONS,
-        });
-        return created.id;
-      })().catch((error: unknown) => {
-        // A rejected promise is still a settled promise — left in place, every
-        // future draftJob() call would reuse and re-await this same permanent
-        // failure. Clear it so a transient creation failure (disk, workspace I/O)
-        // gets a fresh attempt next time instead of poisoning the feature until
-        // a server restart.
-        this.orchestratorAgentIdPromise = null;
-        throw error;
-      });
-    }
-    return this.orchestratorAgentIdPromise;
   }
 }

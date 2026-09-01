@@ -4,6 +4,10 @@ import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
 import type { TurnResult, TurnRunner } from "./contracts.js";
 import { HttpError, RunCancelledError } from "./errors.js";
+import {
+  ORCHESTRATOR_CHAT_DESCRIPTION,
+  buildOrchestratorChatInstructions,
+} from "./orchestrator/instructions.js";
 import { JsonStore } from "./store.js";
 import type {
   Agent,
@@ -65,13 +69,29 @@ export class AgentService implements TurnRunner {
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
-    const instructions = input.instructions?.trim() ?? "";
+    // A client can ask for kind: "orchestrator", but never gets to choose what
+    // that Agent's instructions/description are — a system-behavior Agent's
+    // text is the server's to own, not something to trust over the wire.
+    const isOrchestrator = input.kind === "orchestrator";
+    const instructions = isOrchestrator
+      ? buildOrchestratorChatInstructions(
+          this.store
+            .snapshot()
+            .agents.filter((candidate) => candidate.kind !== "orchestrator")
+            .map((candidate) => ({
+              id: candidate.id,
+              name: candidate.name,
+              capabilitySummary: candidate.capabilitySummary,
+            })),
+        )
+      : (input.instructions?.trim() ?? "");
     const agent: Agent = {
       id,
       name: input.name.trim(),
-      description: input.description?.trim() ?? "",
+      description: isOrchestrator ? ORCHESTRATOR_CHAT_DESCRIPTION : (input.description?.trim() ?? ""),
       instructions,
-      capabilitySummary: summarizeCapability(instructions),
+      capabilitySummary: isOrchestrator ? ORCHESTRATOR_CHAT_DESCRIPTION : summarizeCapability(instructions),
+      ...(isOrchestrator ? { kind: "orchestrator" as const } : {}),
       status: "ready",
       workspacePath: this.workspaces.workspacePath(id),
       codexThreadId: null,

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Agent, AgentRun, Message, SystemInfo } from "../types";
 import { formatTime } from "../lib/format";
+import { CHAT_PHASE_LABEL, classifyReply, deriveChatPhase, isOrchestratorAgent } from "../lib/orchestrator";
+import { PlanCard } from "./PlanCard";
 import { Spinner } from "./Spinner";
 
 const starterPrompts = [
@@ -11,26 +13,47 @@ const starterPrompts = [
 
 export function Playground({
   agent,
+  agents,
   system,
   messages,
   activeRun,
   onSend,
 }: {
   agent: Agent;
+  agents: Agent[];
   system: SystemInfo | null;
   messages: Message[];
   activeRun: AgentRun | null;
   onSend: (content: string) => void;
 }) {
   const [prompt, setPrompt] = useState("");
-  const messageEnd = useRef<HTMLDivElement>(null);
+  // Points at whichever article rendered last (a message, the "thinking"
+  // placeholder, or the run-error notice) — registerLastItem is attached to
+  // all of them, and since they render in a fixed order, the true last one's
+  // ref callback always fires last, so this always ends up correct.
+  const lastItemRef = useRef<HTMLElement | null>(null);
+  const registerLastItem = (el: HTMLElement | null) => {
+    if (el) lastItemRef.current = el;
+  };
+  const isChat = isOrchestratorAgent(agent);
 
   useEffect(() => {
-    messageEnd.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, activeRun]);
+    // block: "start" — not the default "end" a bottom sentinel would give —
+    // so a new reply lands with its own top edge at the top of the visible
+    // area: readable top-down immediately, instead of snapping to its
+    // bottom and cutting off everything above the fold.
+    lastItemRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // Deliberately not [messages, activeRun]: pollRun (App.tsx) hands back a
+    // fresh activeRun object every ~900ms while a run is in flight, and a new
+    // array reference on every render — depending on those directly would
+    // re-scroll on every poll tick, snapping the view back to the top out
+    // from under anyone who scrolled up mid-run. length/status only change on
+    // genuinely new content or a real state transition.
+  }, [messages.length, activeRun?.status]);
 
   const running = activeRun != null && ["queued", "running"].includes(activeRun.status);
   const disabled = agent.status === "stopped" || agent.status === "busy" || running;
+  const phase = deriveChatPhase(messages, running);
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -44,13 +67,20 @@ export function Playground({
     <section className="playground">
       <div className="playground-topbar">
         <div>
-          <span className="eyebrow">Playground</span>
-          <h2>Build something with your Agent</h2>
+          <span className="eyebrow">{isChat ? "Chat" : "Playground"}</span>
+          <h2>{isChat ? "Plan a Job with " + agent.name : "Build something with your Agent"}</h2>
         </div>
-        <div className="session-info">
-          <span className="pulse" />
-          {agent.codexThreadId ? "Session connected" : "New session"}
-        </div>
+        {isChat ? (
+          <div className={"phase-indicator phase-" + phase}>
+            <span className="pulse" />
+            {CHAT_PHASE_LABEL[phase]}
+          </div>
+        ) : (
+          <div className="session-info">
+            <span className="pulse" />
+            {agent.codexThreadId ? "Session connected" : "New session"}
+          </div>
+        )}
       </div>
 
       <div className="messages">
@@ -59,50 +89,85 @@ export function Playground({
             <div className="welcome-orbit">
               <div>⌁</div>
             </div>
-            <h3>What should {agent.name} build?</h3>
+            <h3>{isChat ? "What should this Job accomplish?" : "What should " + agent.name + " build?"}</h3>
             <p>
-              The Agent can inspect files, write code, run commands, and continue the same
-              Codex session across messages.
+              {isChat
+                ? "Describe the task, ask questions, and refine it together. Once I understand it well " +
+                  "enough, I'll draft an ordered Plan and proposed cast right here — nothing runs until you say so."
+                : "The Agent can inspect files, write code, run commands, and continue the same " +
+                  "Codex session across messages."}
             </p>
-            <div className="prompt-grid">
-              {starterPrompts.map((item) => (
-                <button key={item} onClick={() => setPrompt(item)}>
-                  <span>↗</span>
-                  {item}
-                </button>
-              ))}
-            </div>
+            {!isChat && (
+              <div className="prompt-grid">
+                {starterPrompts.map((item) => (
+                  <button key={item} onClick={() => setPrompt(item)}>
+                    <span>↗</span>
+                    {item}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
-          messages.map((message) => (
-            <article className={"message message-" + message.role} key={message.id}>
-              <div className="message-meta">
-                <strong>{message.role === "user" ? "You" : agent.name}</strong>
-                <span>{formatTime(message.createdAt)}</span>
-              </div>
-              <div className="message-body">{message.content}</div>
-            </article>
-          ))
+          messages.map((message) => {
+            if (message.role === "user") {
+              return (
+                <article className="message message-user" key={message.id} ref={registerLastItem}>
+                  <div className="message-meta">
+                    <strong>You</strong>
+                    <span>{formatTime(message.createdAt)}</span>
+                  </div>
+                  <div className="message-body">{message.content}</div>
+                </article>
+              );
+            }
+
+            // The one gate: an assistant reply is only ever shown as raw text
+            // when it does not parse as JSON at all. Anything JSON-shaped is
+            // either a Plan Card or a clean notice — never the raw text.
+            const parsed = classifyReply(message.content);
+            return (
+              <article className="message message-assistant" key={message.id} ref={registerLastItem}>
+                <div className="message-meta">
+                  <strong>{agent.name}</strong>
+                  <span>{formatTime(message.createdAt)}</span>
+                </div>
+                {parsed.kind === "text" && <div className="message-body">{message.content}</div>}
+                {parsed.kind === "plan" && (
+                  <>
+                    {parsed.before && <div className="message-body">{parsed.before}</div>}
+                    <PlanCard draft={parsed.draft} agents={agents} />
+                    {parsed.after && <div className="message-body">{parsed.after}</div>}
+                  </>
+                )}
+                {parsed.kind === "invalid-plan-attempt" && (
+                  <div className="plan-card plan-card-invalid">
+                    <strong>The drafted plan wasn't in the expected shape.</strong>
+                    <p>Ask {agent.name} to fix it, or describe the task differently and try again.</p>
+                  </div>
+                )}
+              </article>
+            );
+          })
         )}
         {running && (
-          <article className="message message-assistant thinking">
+          <article className="message message-assistant thinking" ref={registerLastItem}>
             <div className="message-meta">
               <strong>{agent.name}</strong>
-              <span>working in the Agent workspace</span>
+              <span>{isChat ? "thinking" : "working in the Agent workspace"}</span>
             </div>
             <div className="thinking-row">
               <Spinner />
-              Codex is reading, editing, or running commands…
+              {isChat ? "Thinking…" : "Codex is reading, editing, or running commands…"}
             </div>
           </article>
         )}
         {activeRun?.status === "failed" && (
-          <article className="run-error">
+          <article className="run-error" ref={registerLastItem}>
             <strong>Run failed</strong>
             <span>{activeRun.error}</span>
           </article>
         )}
-        <div ref={messageEnd} />
       </div>
 
       <form className="composer" onSubmit={submit}>
@@ -118,7 +183,9 @@ export function Playground({
           placeholder={
             agent.status === "stopped"
               ? "Start this Agent to continue…"
-              : "Describe what you want the Agent to do…"
+              : isChat
+                ? "Describe the task, or give feedback on the plan…"
+                : "Describe what you want the Agent to do…"
           }
           disabled={disabled}
           rows={3}

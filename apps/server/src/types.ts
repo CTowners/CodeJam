@@ -15,6 +15,13 @@ export interface Agent {
    * `description` (user-authored, sidebar-only, never used for matching).
    */
   capabilitySummary: string;
+  /**
+   * "orchestrator" marks a planning chat rather than a work Agent — excluded
+   * from every Plan's candidate list, and its `instructions` are always the
+   * canonical Orchestrator instructions, never client-supplied. Undefined for
+   * every ordinary Agent.
+   */
+  kind?: "orchestrator";
   status: AgentStatus;
   workspacePath: string;
   codexThreadId: string | null;
@@ -74,6 +81,8 @@ export interface CreateAgentInput {
   name: string;
   description?: string | undefined;
   instructions?: string | undefined;
+  /** When "orchestrator", createAgent ignores description/instructions and sets its own. */
+  kind?: "orchestrator" | undefined;
 }
 
 export interface UpdateAgentInput {

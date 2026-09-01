@@ -1,13 +1,211 @@
-import type { Agent } from "../types";
+import type { Agent, DraftedPlan, Message } from "../types";
 
-/** Mirrors apps/server/src/job-service.ts's ORCHESTRATOR_AGENT_NAME. */
-export const ORCHESTRATOR_AGENT_NAME = "Orchestrator";
+/** A "chat" is a real Agent flagged with kind — never inferred from its (user-renamable) name. */
+export function isOrchestratorAgent(agent: Pick<Agent, "kind">): boolean {
+  return agent.kind === "orchestrator";
+}
 
 /**
- * The one system Agent auto-created to draft Plans for Jobs — shown in its own
- * section at the top of the sidebar, never offered a Delete control, since
- * deleting it breaks Job drafting until it's lazily recreated.
+ * A light shape check, not full validation — the server (response-schema.ts's
+ * zod schema, run again at /api/jobs/approve) is the real authority. This only
+ * decides whether an assistant reply is render-as-a-plan-card material versus
+ * plain conversational text; a reply that's valid JSON but fails this check is
+ * treated as an invalid-draft reply, never shown as raw JSON either way.
  */
-export function isOrchestratorAgent(agent: Pick<Agent, "name">): boolean {
-  return agent.name === ORCHESTRATOR_AGENT_NAME;
+export function looksLikeDraftedPlan(value: unknown): value is DraftedPlan {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  const plan = candidate.plan as Record<string, unknown> | undefined;
+  if (!plan || typeof plan !== "object") return false;
+  if (!Array.isArray(plan.steps) || plan.steps.length === 0) return false;
+  if (typeof candidate.castByRole !== "object" || candidate.castByRole === null) return false;
+  return plan.steps.every(
+    (step) =>
+      step &&
+      typeof step === "object" &&
+      typeof (step as Record<string, unknown>).id === "string" &&
+      typeof (step as Record<string, unknown>).role === "string" &&
+      typeof (step as Record<string, unknown>).instruction === "string",
+  );
+}
+
+/** Strips a ```json fence the model may have added, mirroring the server's own tolerance. */
+function stripCodeFence(raw: string): string {
+  const trimmed = raw.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+  return fenced ? fenced[1]! : trimmed;
+}
+
+/**
+ * Index of the `}` that closes the `{` at `start`, respecting string
+ * literals (so a `}` inside a quoted instruction doesn't end the object
+ * early) — or -1 if the braces never balance before the text ends. Used to
+ * find a JSON object embedded anywhere in a reply, not just one that
+ * happens to be the entire message.
+ */
+function findMatchingBraceEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+export type ParsedReply =
+  | { kind: "plan"; draft: DraftedPlan; before: string; after: string }
+  | { kind: "invalid-plan-attempt" }
+  | { kind: "text" };
+
+/**
+ * Classifies an assistant reply for rendering — the one place that decides
+ * whether raw model text could ever reach the screen unmediated. The model
+ * is told to reply with ONLY JSON once it's ready to draft, but doesn't
+ * always comply — it sometimes wraps the JSON in a sentence or two of prose
+ * ("Here's the plan: {...}"). This scans for a balanced {...} block anywhere
+ * in the reply, not just one that happens to be the whole message, so that
+ * case still renders as a Plan Card (with the surrounding prose kept as
+ * ordinary text) instead of dumping the raw JSON onto the screen.
+ */
+export function classifyReply(content: string): ParsedReply {
+  const stripped = stripCodeFence(content);
+  const start = stripped.indexOf("{");
+  if (start === -1) {
+    return { kind: "text" };
+  }
+  const end = findMatchingBraceEnd(stripped, start);
+  if (end === -1) {
+    // An unbalanced `{` is almost always incidental punctuation in prose
+    // ("a config like { name: ..."), not an attempted JSON object — showing
+    // the surrounding text as-is is the safe default here.
+    return { kind: "text" };
+  }
+  const candidate = stripped.slice(start, end + 1);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(candidate);
+  } catch {
+    // A balanced {...} block that still fails to parse is very unlikely to
+    // be incidental — treat it as a genuine broken drafting attempt rather
+    // than ever showing that raw, malformed JSON to the user.
+    return { kind: "invalid-plan-attempt" };
+  }
+  if (looksLikeDraftedPlan(parsed)) {
+    return {
+      kind: "plan",
+      draft: parsed,
+      before: stripped.slice(0, start).trim(),
+      after: stripped.slice(end + 1).trim(),
+    };
+  }
+  // Balanced, valid JSON, but not plan-shaped — most likely an incidental
+  // example inside a conversational reply, not a drafting attempt.
+  return { kind: "text" };
+}
+
+export type ChatPhase = "starting" | "discussing" | "thinking" | "plan-ready";
+
+export const CHAT_PHASE_LABEL: Record<ChatPhase, string> = {
+  starting: "Tell me about the task",
+  discussing: "Discussing the task",
+  thinking: "Thinking…",
+  "plan-ready": "Plan ready — say the word to run it",
+};
+
+/**
+ * There's no explicit "draft the plan" step anymore — the model decides on
+ * its own when it has enough to plan, and emits the JSON on that turn. This
+ * derives a phase label from that same signal (classifyReply) instead of any
+ * separate state, so the indicator can never disagree with what's actually
+ * rendered below it.
+ */
+export function deriveChatPhase(messages: readonly Pick<Message, "role" | "content">[], running: boolean): ChatPhase {
+  if (running) return "thinking";
+  const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
+  if (lastAssistant && classifyReply(lastAssistant.content).kind === "plan") return "plan-ready";
+  return messages.length === 0 ? "starting" : "discussing";
+}
+
+const AFFIRMATIVE_WORDS = new Set([
+  "ok",
+  "okay",
+  "yes",
+  "yeah",
+  "yea",
+  "yep",
+  "yup",
+  "sure",
+  "approve",
+  "approved",
+  "proceed",
+  "confirm",
+  "confirmed",
+  "lgtm",
+]);
+const AFFIRMATIVE_PHRASES = [
+  "go ahead",
+  "go for it",
+  "do it",
+  "run it",
+  "start it",
+  "kick it off",
+  "sounds good",
+  "looks good",
+  "let's go",
+  "lets go",
+  "let's do it",
+  "lets do it",
+  "ship it",
+  "make it happen",
+];
+const NEGATIVE_WORDS = new Set([
+  "no",
+  "not",
+  "don't",
+  "dont",
+  "wait",
+  "stop",
+  "hold",
+  "change",
+  "instead",
+  "actually",
+  "but",
+  "except",
+  "unless",
+]);
+
+/**
+ * There's no "Approve & Run" button — approval is just saying so, and real
+ * replies are short phrases ("yes go ahead", "sounds good", "yeah do it"),
+ * not always an exact match for one fixed sentence — hence a word/phrase
+ * heuristic instead of a single regex: short (≤6 words), no negation, and
+ * either a standalone affirmative word or a recognized short phrase. Only
+ * ever checked against the user's message when the immediately preceding
+ * assistant reply was a drafted plan (see App.tsx's sendMessage), so an
+ * unrelated "ok" earlier in the conversation is never mistaken for
+ * approval — and when it does fire, the message is never sent to the model
+ * at all (see approvePlanFromChat), so there's no chance for it to narrate
+ * a guess about what happens next.
+ */
+export function isAffirmative(text: string): boolean {
+  const normalized = text.trim().toLowerCase().replace(/[.!?]+$/, "");
+  if (!normalized) return false;
+  const words = normalized.replace(/[.,!?]/g, "").split(/\s+/).filter(Boolean);
+  if (words.length > 6) return false;
+  if (words.some((word) => NEGATIVE_WORDS.has(word))) return false;
+  if (words.some((word) => AFFIRMATIVE_WORDS.has(word))) return true;
+  return AFFIRMATIVE_PHRASES.some((phrase) => normalized.includes(phrase));
 }
