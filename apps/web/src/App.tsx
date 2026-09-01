@@ -10,6 +10,7 @@ import { Playground } from "./components/Playground";
 import { CreateAgentModal } from "./components/CreateAgentModal";
 import { EmptyAgentState } from "./components/EmptyAgentState";
 import { JobScreen } from "./components/job/JobScreen";
+import { useChatWork, useJobPolling } from "./lib/chat-work";
 
 type View = "playground" | "jobs";
 
@@ -27,6 +28,11 @@ export default function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [system, setSystem] = useState<SystemInfo | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  // Lives here, above every view switch, so tabbing away never discards a chat's
+  // half-written request or an in-flight draft.
+  const chatWork = useChatWork();
+  useJobPolling(chatWork);
+
   const [showSettings, setShowSettings] = useState(false);
   const [form, setForm] = useState<AgentFormValues>(emptyForm);
   const [activeRun, setActiveRun] = useState<AgentRun | null>(null);
@@ -64,6 +70,17 @@ export default function App() {
   const bootstrap = useCallback(async () => {
     await Promise.all([refreshAgents(), api.system().then(setSystem)]);
   }, [refreshAgents]);
+
+  // Approving a Plan spawns a subagent per role, server-side, mid-run. Without
+  // this the sidebar only picked them up on the next action the user happened to
+  // take, so a Chat looked empty while its subagents were already working.
+  const jobsRunning = chatWork.activeJobs.length > 0;
+  useEffect(() => {
+    if (!jobsRunning) return;
+    const timer = window.setInterval(() => void refreshAgents(), 2000);
+    return () => window.clearInterval(timer);
+  }, [jobsRunning, refreshAgents]);
+
 
   useEffect(() => {
     mountedRef.current = true;
@@ -112,6 +129,32 @@ export default function App() {
       });
     }
   }, [selected]);
+
+  /**
+   * A Chat needs no configuring — it is a conversation, not a specialist — so it
+   * is created directly rather than through the Agent form. Its instructions are
+   * set server-side; the user only names it.
+   */
+  const createChat = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const existing = agents.filter((agent) => agent.kind === "chat").length;
+      const { agent } = await api.createAgent({
+        name: existing === 0 ? "Chat" : `Chat ${existing + 1}`,
+        description: "Where you ask for work. Plans it, and fans it out to Agents.",
+        // Deliberately blank: the server owns a chat's instructions.
+        instructions: "",
+        kind: "chat",
+      });
+      await refreshAgents();
+      setSelectedId(agent.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const createAgent = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -272,6 +315,7 @@ export default function App() {
           setForm(emptyForm);
           setShowCreate(true);
         }}
+        onNewChatClick={createChat}
       />
 
       <main className="main">
@@ -297,11 +341,12 @@ export default function App() {
         )}
 
         {view === "jobs" ? (
-          <JobScreen agents={agents} />
+          <JobScreen agents={agents} chatWork={chatWork} />
         ) : selected ? (
           <>
             <AgentHeader
               agent={selected}
+              agents={agents}
               busy={busy}
               onToggleSettings={() => setShowSettings((value) => !value)}
               onToggleAgent={toggleAgent}
@@ -313,19 +358,40 @@ export default function App() {
                 form={form}
                 busy={busy}
                 workspacePath={selected.workspacePath}
+                readOnly={selected.kind === "worker"}
                 onChange={setForm}
                 onSubmit={saveAgent}
                 onClose={() => setShowSettings(false)}
               />
             )}
 
-            <Playground
-              agent={selected}
-              system={system}
-              messages={messages}
-              activeRun={activeRun}
-              onSend={sendMessage}
-            />
+            {/* Each kind gets the surface that matches what it can do. A Chat
+                plans and fans work out, so it gets the Job surface — asking here
+                is what starts a Job. A template answers for itself, so it gets a
+                plain conversation. A worker is directed through its Chat. */}
+            {selected.kind === "chat" ? (
+              <JobScreen agents={agents} chatId={selected.id} chatWork={chatWork} />
+            ) : selected.kind === "template" ? (
+              <Playground
+                agent={selected}
+                system={system}
+                messages={messages}
+                activeRun={activeRun}
+                onSend={sendMessage}
+              />
+            ) : (
+              <div className="kind-notice">
+                <h2>Subagent</h2>
+                <p>
+                  Spawned for one Job. Its work is on the Jobs screen. To direct it,
+                  ask its Chat — messaging it here would race the Coordinator.
+                </p>
+                <div className="kind-notice-instructions">
+                  <span className="eyebrow">Instructions</span>
+                  <pre>{selected.instructions || "(none)"}</pre>
+                </div>
+              </div>
+            )}
           </>
         ) : (
           <EmptyAgentState

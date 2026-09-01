@@ -90,4 +90,32 @@ describe("parseDraftedPlan", () => {
       produces: [],
     });
   });
+
+  it("repairs a lone backslash from a regex in replyPattern", () => {
+    // A model writing ^\d+$ emits a single backslash: valid regex, invalid JSON.
+    // Throwing the whole draft away over it wastes a planning turn.
+    const raw = `{
+      "plan": {
+        "steps": [
+          { "id": "s1", "role": "counter", "instruction": "count", "needs": [], "produces": [], "replyPattern": "^\\d+$" }
+        ],
+        "contextMode": "none",
+        "source": "generated"
+      },
+      "castByRole": { "counter": { "kind": "existing", "agentId": "agent-1" } }
+    }`;
+
+    const parsed = parseDraftedPlan(raw);
+    expect(parsed.plan.steps[0]!.replyPattern).toBe("^\\d+$");
+  });
+
+  it("extracts the object when the model wraps it in prose", () => {
+    const raw = [
+      "Sure! Here is the plan you asked for:",
+      '{"plan":{"steps":[{"id":"s1","role":"r","instruction":"do","needs":[],"produces":[]}],"contextMode":"none","source":"generated"},"castByRole":{"r":{"kind":"existing","agentId":"a1"}}}',
+      "Let me know if you would like changes.",
+    ].join("\n");
+
+    expect(parseDraftedPlan(raw).plan.steps).toHaveLength(1);
+  });
 });

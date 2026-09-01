@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -126,8 +126,8 @@ describe("JobService", () => {
 
     const draft = await jobs.draftJob("Ship it", "add a feature");
     expect(draft.draft.castByRole.implementer).toEqual({ kind: "existing", agentId: implementerId });
-    // drafting materializes a real, inspectable Orchestrator Agent
-    expect(agents.listAgents().some((agent) => agent.name === "Orchestrator")).toBe(true);
+    // drafting materializes a real, inspectable Chat Agent
+    expect(agents.listAgents().some((agent) => agent.kind === "chat")).toBe(true);
 
     const job = await jobs.approveDraft(draft.draftId);
     // The background run may have already flipped this to "running" by the time
@@ -209,7 +209,11 @@ describe("JobService", () => {
 
     const draft1 = await jobs.draftJob("Job 1", "task one");
     await jobs.approveDraft(draft1.draftId);
-    await expect.poll(() => agents.getAgent(implementerId).status).toBe("busy");
+    // The template never runs; approval spawned a worker from it, and that is
+    // what goes busy.
+    await expect
+      .poll(() => agents.listAgents().some((agent) => agent.kind === "worker" && agent.status === "busy"))
+      .toBe(true);
 
     const draft2 = await jobs.draftJob("Job 2", "task two");
     await expect(jobs.approveDraft(draft2.draftId)).rejects.toMatchObject({ statusCode: 409 });
@@ -226,17 +230,17 @@ describe("JobService", () => {
             plan: {
               steps: [
                 { id: "s1", role: "implementer", instruction: "write it", needs: [], produces: [] },
-                { id: "s2", role: "tester", instruction: "test it", needs: [], produces: [] },
+                { id: "s2", role: "implementer", instruction: "test it", needs: [], produces: [] },
               ],
               contextMode: "none",
               source: "generated",
             },
             castByRole: {
-              // Same Agent plays both roles, so the scheduler runs them one at a
-              // time (at most one Step per Agent per batch) instead of together —
-              // giving cancelJob a real between-Steps boundary to land in.
+              // Both Steps share ONE role, so they resolve to one worker and the
+              // scheduler runs them one at a time (at most one Step per Agent per
+              // batch) — giving cancelJob a real between-Steps boundary to land in.
+              // Two roles would now spawn two workers and run together.
               implementer: { kind: "existing", agentId: sharedAgentId },
-              tester: { kind: "existing", agentId: sharedAgentId },
             },
           }),
           threadId: "orchestrator-thread",
@@ -343,7 +347,7 @@ describe("JobService", () => {
     expect(jobsAfterRestart.getJobEvents("stuck-job").map((event) => event.type)).toContain("job_halted");
   });
 
-  it("creates only one Orchestrator Agent even when draftJob is called concurrently before it exists", async () => {
+  it("creates only one Chat Agent even when draftJob is called concurrently before it exists", async () => {
     const runner = new ScriptedRunner(() => ({
       output: JSON.stringify({
         plan: {
@@ -362,18 +366,18 @@ describe("JobService", () => {
     // collide at AgentService's own one-turn-per-Agent busy check ("This Agent is
     // already running a turn") — that's a separate, already-fixed guard, not what
     // this test is about. allSettled so that expected collision doesn't hide the
-    // one thing being checked here: at most one Orchestrator Agent ever gets created.
+    // one thing being checked here: at most one Chat Agent ever gets created.
     await Promise.allSettled([
       jobs.draftJob("Job 1", "task one"),
       jobs.draftJob("Job 2", "task two"),
       jobs.draftJob("Job 3", "task three"),
     ]);
 
-    const orchestrators = agents.listAgents().filter((agent) => agent.name === "Orchestrator");
-    expect(orchestrators).toHaveLength(1);
+    const chats = agents.listAgents().filter((agent) => agent.kind === "chat");
+    expect(chats).toHaveLength(1);
   });
 
-  it("retries Orchestrator Agent creation instead of staying permanently broken after a transient failure", async () => {
+  it("retries Chat Agent creation instead of staying permanently broken after a transient failure", async () => {
     const runner = new ScriptedRunner(() => ({
       output: JSON.stringify({
         plan: {
@@ -386,25 +390,26 @@ describe("JobService", () => {
       threadId: "t",
       usage: null,
     }));
-    const { agents, jobs, config } = await makeServices(runner);
+    const { agents, jobs } = await makeServices(runner);
 
-    // Simulate a transient failure creating the Orchestrator Agent's workspace
-    // (disk hiccup, permission blip) by making the workspace root briefly
-    // unwritable — the same class of failure a flaky mount could produce.
-    await chmod(config.workspaceRoot, 0o000);
-    try {
-      await expect(jobs.draftJob("Job 1", "task one")).rejects.toThrow();
-    } finally {
-      // Restore before any assertion or later step can itself be blocked by it.
-      await chmod(config.workspaceRoot, 0o755);
-    }
-    expect(agents.listAgents().filter((agent) => agent.name === "Orchestrator")).toHaveLength(0);
+    // Simulate a transient failure creating the Chat Agent (disk hiccup, flaky
+    // mount) by forcing exactly one rejection. Injecting the failure directly,
+    // rather than making a directory unwritable, keeps this test honest for any
+    // user the suite runs as — file permission bits do not restrain root, so a
+    // chmod-based version of this silently passes its setup and then fails the
+    // assertion on a root/CI container.
+    const createOnce = vi
+      .spyOn(agents, "createAgent")
+      .mockRejectedValueOnce(new Error("transient failure creating the Chat Agent"));
+    await expect(jobs.draftJob("Job 1", "task one")).rejects.toThrow();
+    createOnce.mockRestore();
+    expect(agents.listAgents().filter((agent) => agent.kind === "chat")).toHaveLength(0);
 
     // The condition that caused the failure is gone — a second attempt must not
     // reuse a permanently-poisoned promise from the first one.
     const draft = await jobs.draftJob("Job 2", "task two");
     expect(draft).toBeDefined();
-    expect(agents.listAgents().filter((agent) => agent.name === "Orchestrator")).toHaveLength(1);
+    expect(agents.listAgents().filter((agent) => agent.kind === "chat")).toHaveLength(1);
   });
 
   it("keeps running instead of crashing when persisting live progress fails", async () => {

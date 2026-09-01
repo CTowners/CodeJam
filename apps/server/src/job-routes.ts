@@ -5,8 +5,23 @@ import type { JobService } from "./job-service.js";
 const jobIdParams = z.object({ id: z.string().uuid() });
 const draftIdParams = z.object({ draftId: z.string().uuid() });
 const draftJobBody = z.object({
-  name: z.string().trim().min(1).max(120).optional(),
+  // Accepts "" as absent: "optional" fields arrive from forms as empty strings,
+  // and rejecting that with a 400 is a trap rather than a validation.
+  name: z
+    .string()
+    .trim()
+    .max(120)
+    .optional()
+    .transform((value) => (value ? value : undefined)),
   task: z.string().trim().min(1).max(20_000),
+  /** Which chat is asking. Omitted falls back to the default chat. */
+  chatId: z.string().uuid().optional(),
+  /** Which of Your Agents may be cast. Omitted or empty means all of them. */
+  agentIds: z.array(z.string().uuid()).optional(),
+});
+
+const reviseBody = z.object({
+  feedback: z.string().trim().min(1).max(5_000),
 });
 
 /** Mounted the same way every other route group is: `app.register(jobRoutes, { jobService })`. */
@@ -15,8 +30,19 @@ export async function jobRoutes(app: FastifyInstance, opts: { jobService: JobSer
 
   app.post("/api/jobs/draft", async (request, reply) => {
     const body = draftJobBody.parse(request.body);
-    const draft = await jobService.draftJob(body.name ?? body.task.slice(0, 80), body.task);
+    const draft = await jobService.draftJob(
+      body.name ?? body.task.slice(0, 80),
+      body.task,
+      body.chatId,
+      body.agentIds,
+    );
     return reply.code(201).send(draft);
+  });
+
+  app.post("/api/jobs/drafts/:draftId/revise", async (request) => {
+    const { draftId } = draftIdParams.parse(request.params);
+    const { feedback } = reviseBody.parse(request.body);
+    return jobService.reviseDraft(draftId, feedback);
   });
 
   app.get("/api/jobs/drafts/:draftId", async (request) => {

@@ -99,6 +99,8 @@ export interface DraftedPlan {
 
 export interface Job {
   id: string;
+  /** The chat this Job was started from — what nests it, and its workers, in the sidebar. */
+  chatId: string;
   name: string;
   /** What the user typed. */
   task: string;

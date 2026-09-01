@@ -1,10 +1,11 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { summarizeCapability } from "./capability-summary.js";
-import type { Database, DatabaseV1 } from "./types.js";
+import type { Database, DatabaseV1, DatabaseV2 } from "./types.js";
+import { CHAT_AGENT_NAME, LEGACY_ORCHESTRATOR_AGENT_NAME } from "./agent-kinds.js";
 
 const emptyDatabase = (): Database => ({
-  version: 2,
+  version: 3,
   agents: [],
   messages: [],
   runs: [],
@@ -16,8 +17,11 @@ const emptyDatabase = (): Database => ({
 const isDatabaseV1 = (parsed: { version: unknown }): parsed is DatabaseV1 =>
   parsed.version === 1;
 
+const isDatabaseV2 = (parsed: { version: unknown }): parsed is DatabaseV2 =>
+  parsed.version === 2;
+
 /** v1 had no coordination collections and no Agent.capabilitySummary. */
-const migrateV1 = (v1: DatabaseV1): Database => ({
+const migrateV1 = (v1: DatabaseV1): DatabaseV2 => ({
   version: 2,
   agents: v1.agents.map((agent) => ({
     ...agent,
@@ -30,6 +34,44 @@ const migrateV1 = (v1: DatabaseV1): Database => ({
   events: [],
 });
 
+/**
+ * v2 had one flat kind of Agent. v3 splits them: the old singleton "Orchestrator"
+ * becomes the first "chat" (and takes its new name with it, since the chat is
+ * looked up by name), and everything the user made by hand becomes a "template".
+ *
+ * Every kind keeps its workspace: a template is castable by a chat AND holds its
+ * own one-to-one conversation, so it still needs somewhere for Codex to work.
+ */
+const migrateV2 = (v2: DatabaseV2): Database => {
+  const looksLikeChat = (name: string): boolean =>
+    name === LEGACY_ORCHESTRATOR_AGENT_NAME || name === CHAT_AGENT_NAME;
+  // Exactly ONE agent becomes the chat, by id — nothing ever stopped a user
+  // hand-making a second agent called "Orchestrator", and promoting both would
+  // give two indistinguishable chats with drafting silently bound to one of them.
+  const chatId = v2.agents.find((agent) => looksLikeChat(agent.name))?.id ?? "";
+
+  return {
+    version: 3,
+    agents: v2.agents.map((agent) => {
+      const isChat = agent.id === chatId;
+      return {
+        ...agent,
+        kind: isChat ? ("chat" as const) : ("template" as const),
+        parentChatId: null,
+        name: isChat ? CHAT_AGENT_NAME : agent.name,
+        workspacePath: agent.workspacePath,
+      };
+    }),
+    messages: v2.messages,
+    runs: v2.runs,
+    // Jobs predate chatId. Attribute them to the one chat that existed, so old
+    // Jobs still nest in the sidebar instead of hanging off a chat id nothing has.
+    jobs: v2.jobs.map((job) => ({ ...job, chatId: job.chatId ?? chatId })),
+    jobMessages: v2.jobMessages,
+    events: v2.events,
+  };
+};
+
 export class JsonStore {
   private data: Database = emptyDatabase();
   private queue: Promise<void> = Promise.resolve();
@@ -40,14 +82,19 @@ export class JsonStore {
     await mkdir(path.dirname(this.filePath), { recursive: true });
     try {
       const raw = await readFile(this.filePath, "utf8");
-      const parsed = JSON.parse(raw) as Database | DatabaseV1;
+      const parsed = JSON.parse(raw) as Database | DatabaseV1 | DatabaseV2;
       if (!Array.isArray(parsed.agents)) {
         throw new Error("Unsupported database format");
       }
+      // Migrations chain: v1 -> v2 -> v3, so a database from any released
+      // version reaches the current one in a single load.
       if (isDatabaseV1(parsed)) {
-        this.data = migrateV1(parsed);
+        this.data = migrateV2(migrateV1(parsed));
         await this.persist();
-      } else if (parsed.version === 2) {
+      } else if (isDatabaseV2(parsed)) {
+        this.data = migrateV2(parsed);
+        await this.persist();
+      } else if (parsed.version === 3) {
         this.data = parsed;
       } else {
         throw new Error("Unsupported database format");

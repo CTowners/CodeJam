@@ -63,6 +63,7 @@ describe("HTTP boundary", () => {
     const throwingService = {
       listAgents: () => [],
       systemInfo: async () => ({}),
+      getAgent: (id: string) => ({ id, name: "Chat", kind: "chat", status: "ready" }),
       sendMessage: async () => {
         throw new HttpError(503, "Ark is not configured. Set ARK_API_KEY and ARK_MODEL, then restart.");
       },
@@ -82,12 +83,12 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
-  it("refuses to delete the Orchestrator Agent, at the request boundary not just the UI", async () => {
+  it("refuses to delete a Chat Agent, at the request boundary not just the UI", async () => {
     let deleteCalled = false;
     const protectedService = {
       listAgents: () => [],
       systemInfo: async () => ({}),
-      getAgent: (id: string) => ({ id, name: "Orchestrator", status: "ready" }),
+      getAgent: (id: string) => ({ id, name: "Chat", kind: "chat", status: "ready" }),
       deleteAgent: async () => {
         deleteCalled = true;
         return { archivedWorkspace: "/should/never/be/called" };
@@ -101,7 +102,7 @@ describe("HTTP boundary", () => {
     });
 
     expect(response.statusCode).toBe(403);
-    expect(response.json().error).toMatch(/Orchestrator Agent/);
+    expect(response.json().error).toMatch(/Chat/);
     expect(deleteCalled).toBe(false);
     await app.close();
   });
@@ -111,7 +112,7 @@ describe("HTTP boundary", () => {
     const ordinaryService = {
       listAgents: () => [],
       systemInfo: async () => ({}),
-      getAgent: (id: string) => ({ id, name: "Implementer", status: "ready" }),
+      getAgent: (id: string) => ({ id, name: "Implementer", kind: "template", status: "ready" }),
       deleteAgent: async () => {
         deleteCalled = true;
         return { archivedWorkspace: "/archived" };

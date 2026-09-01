@@ -23,16 +23,30 @@ a human plays project manager, prompting each Agent in sequence, copying one
 Agent's output into another's context by hand, with no shared plan and no way
 to tell a transient hiccup from a genuine dead end.
 
-**The design, in short:** an **Orchestrator** drafts a Plan (ordered,
-dependency-aware steps) for a submitted task and casts a specialist Agent for
-each step by matching it against every Agent's `capabilitySummary` — a field
-auto-derived from that Agent's `instructions`, not hand-typed. A human reviews
-and approves the Plan before anything runs. A **Coordinator** then executes
-it deterministically: real files move between Agents' sealed workspaces
-through a per-Job staging area (`needs` copied in before a turn, `produces`
-verified and copied out after), and a failed turn is classified by cause —
-transient, validation, auth, or cancelled — with a different retry-or-halt
-response for each, never a single flat retry count.
+**The design, in short:** you ask a **Chat** for something. It drafts a Plan
+(dependency-aware steps) and casts a specialist for each step by matching it
+against your Agents' `capabilitySummary` — a field auto-derived from each
+Agent's `instructions`, not hand-typed. Independent steps are fanned out to run
+in **parallel**; only a real file dependency forces one step to wait for
+another. A human reviews and approves the Plan before anything runs. A
+**Coordinator** then executes it deterministically: real files move between
+Agents' sealed workspaces through a per-Job staging area (`needs` copied in
+before a turn, `produces` verified and copied out after), and a failed turn is
+classified by cause — transient, validation, auth, or cancelled — with a
+different retry-or-halt response for each, never a single flat retry count.
+
+**Three kinds of Agent**, which is what makes the above navigable:
+
+| Kind | Where | Can you talk to it? | Plans and fans out? |
+| --- | --- | --- | --- |
+| **Chat** | "Chats" | Yes — this is where you ask | **Yes** |
+| **Your Agents** | "Your Agents" | Yes, one-to-one | No |
+| **Subagent** | nested under its Chat | No — inspect only | No |
+
+"Your Agents" are reusable role definitions. Casting one never runs it: it is
+cloned into a fresh **subagent** for that Job, so the definition stays reusable
+and each Job gets its own isolated Agents. Subagents are read-only records of
+what a Job did — the evidence its transcript is read against.
 
 Full design detail, the exact failure-handling table, and known limitations
 live in [AGENTS.md §5](AGENTS.md#5-architecture--orchestrator-and-coordinator)
@@ -68,9 +82,11 @@ don't work.
 - Persistent Agent workspaces and Codex sessions
 - Disposable Docker, Colima, or Podman container for each local turn
 - Docker and Terraform deployment paths for Volcengine ECS
-- Multi-agent coordination: an Orchestrator drafts and casts a Plan across
-  several Agents, a Coordinator executes it with real file exchange and
-  cause-based failure handling — see above
+- Multi-agent coordination: a Chat drafts and casts a Plan across several
+  Agents — fanning independent work out to run in parallel — and a Coordinator
+  executes it with real file exchange and cause-based failure handling
+- Tasks are not only code: research, writing, analysis and review all work the
+  same way, since every Agent works by reading and writing files
 
 ## Requirements
 

@@ -115,6 +115,11 @@ need to catch up to it; see the gap called out at the end of this section.
 
 Two components, split by when they run and what kind of decision they make.
 
+> Naming: "Orchestrator" throughout this section is the *component* (the
+> `Orchestrator` class in `orchestrator/`). What the user sees and clicks is a
+> **Chat** — the Agent of kind `"chat"` that the drafting turn runs on. The two
+> are the same thing seen from different sides; the UI never says "Orchestrator".
+
 **Orchestrator — judgment, upstream, runs once per Job.**
 - Drafts a Plan: an ordered, dependency-aware set of Steps for the submitted task.
 - Casts each Step by matching it against every Agent's `capabilitySummary` — not a
@@ -126,11 +131,33 @@ Two components, split by when they run and what kind of decision they make.
   for the Job. If no existing Agent's `capabilitySummary` fits a Step, the
   Orchestrator may fall back to drafting a brand-new Agent (name + instructions) as
   part of the Plan — shown in plan review exactly like any other cast pick, editable
-  or rejectable before anything runs. **It is only materialized as a real Agent
-  (own workspace, generated `capabilitySummary`, visible in the sidebar) once the
-  whole Plan is approved** — a rejected plan leaves no orphaned Agent behind. Once
-  real, it persists after the Job like any user-made Agent: inspectable, editable,
-  reusable in future Jobs, same as one the user created by hand.
+  or rejectable before anything runs. **Nothing is created until the whole Plan is
+  approved** — a rejected plan leaves no orphaned Agent behind.
+- On approval, *both* kinds of cast proposal resolve to a **worker** (a subagent),
+  never to the template itself: an "existing" pick is cloned from that template's
+  instructions, a "new" pick is created outright. A worker belongs to its Job and
+  its Chat — it is inspectable but **not editable, not chattable, and not offered
+  as a cast option in later Jobs** (drafting only ever sees templates). That is
+  what keeps a template a reusable role definition instead of something that
+  accumulates one Job's state.
+
+**Agent kinds.** `AgentKind` (`types.ts`) is `"chat" | "template" | "worker"`, and
+the rules live in `agent-kinds.ts`:
+- `chat` — what the user talks to and the only kind that plans and fans work out
+  (`canOrchestrate`). Named `"Chat"` (`CHAT_AGENT_NAME`); looked up by kind, so the
+  name is display-only. Users can create more than one; the last one cannot be
+  deleted, since drafting needs one to exist.
+- `template` — "Your Agents". Chattable one-to-one (no orchestration), and the only
+  kind a Plan may cast.
+- `worker` — a subagent, created only by approving a Plan. Never chattable
+  (`isChattable`), never editable, nested under its `parentChatId` in the sidebar.
+
+**Fan-out.** The drafting prompt (`orchestrator/prompt.ts`) tells the model that
+steps are *not* run in array order — every step whose `needs` are satisfied starts
+alongside its siblings — and that fanning out N workers requires N **distinct role
+labels**, since two steps sharing a label resolve to one Agent and serialize. The
+scheduler already worked this way; the prompt previously did not say so, so plans
+came back as sequential chains.
 - The user reviews the drafted Plan and can revise its structure via chat
   (propose/discuss/revise) or reassign a Step's cast via a picker. The whole Plan
   is approved once, upfront, before anything runs.
@@ -239,8 +266,8 @@ got built and any gaps/limitations worth knowing before extending it.
    only grew `runTurn`/`resetMemory`, making it implement `TurnRunner` directly so a
    `Coordinator` can drive it with no adapter class. `JobService` owns the draft (in-
    memory, pre-approval) → approve (materialize + persist) → run (background
-   `Coordinator`, wired to a lazily-created "Orchestrator" system Agent for plan-
-   drafting turns) → cancel lifecycle. Routes: `POST /api/jobs/draft`,
+   `Coordinator`, wired to a lazily-created Chat Agent for plan-drafting turns)
+   → cancel lifecycle. Routes: `POST /api/jobs/draft`,
    `GET /api/jobs/drafts/:draftId`, `POST /api/jobs/drafts/:draftId/approve`,
    `GET /api/jobs`, `GET /api/jobs/:id`, `GET /api/jobs/:id/messages`,
    `GET /api/jobs/:id/events`, `POST /api/jobs/:id/cancel`. 4 integration tests

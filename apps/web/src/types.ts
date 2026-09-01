@@ -1,15 +1,25 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
+
+/**
+ * Mirrors the server's AgentKind. Decides where an Agent appears in the sidebar
+ * and whether it can be talked to: only a "chat" can.
+ */
+export type AgentKind = "chat" | "template" | "worker";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 export interface Agent {
   id: string;
+  kind: AgentKind;
+  /** Set for workers: the chat they are nested under. */
+  parentChatId: string | null;
   name: string;
   description: string;
   instructions: string;
   /** Derived from instructions server-side, regenerated on change. Display only. */
   capabilitySummary: string;
   status: AgentStatus;
-  workspacePath: string;
+  /** Null for templates — a role definition owns no files. */
+  workspacePath: string | null;
   codexThreadId: string | null;
   lastError: string | null;
   createdAt: string;
@@ -94,6 +104,8 @@ export interface DraftedPlan {
 
 export interface JobDraft {
   draftId: string;
+  /** 0 for the first draft; higher once the user has had it revised. */
+  revision: number;
   name: string;
   task: string;
   draft: DraftedPlan;
@@ -102,6 +114,8 @@ export interface JobDraft {
 
 export interface Job {
   id: string;
+  /** The chat this Job was started from. */
+  chatId: string;
   name: string;
   task: string;
   castByRole: Partial<Record<AgentRole, string>>;

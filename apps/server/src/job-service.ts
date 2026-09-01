@@ -9,22 +9,25 @@ import { COORDINATION_LIMITS } from "./contracts.js";
 import { HttpError } from "./errors.js";
 import { ModelPlanDrafter } from "./orchestrator/model-plan-drafter.js";
 import { Orchestrator } from "./orchestrator/orchestrator.js";
+import { buildRevisionGuidance } from "./orchestrator/prompt.js";
 import type { JsonStore } from "./store.js";
+import { CHAT_AGENT_NAME, CHAT_INSTRUCTIONS } from "./agent-kinds.js";
 import type { Database } from "./types.js";
-
-/** Exported so app.ts can refuse to delete this Agent at the request boundary, not just in the UI. */
-export const ORCHESTRATOR_AGENT_NAME = "Orchestrator";
-const ORCHESTRATOR_INSTRUCTIONS = [
-  "You draft Plans for the Coordinator to execute — you never touch files or run",
-  "code yourself. Given a task and a list of candidate Agents (each with an id,",
-  "name, and capabilitySummary), respond with a Plan and a proposed cast, in the",
-  "exact JSON shape you're given in each prompt. Nothing else.",
-].join(" ");
 
 export interface JobDraft {
   draftId: string;
+  /** The chat that asked. Carried through approval so the Job and its workers nest under it. */
+  chatId: string;
   name: string;
   task: string;
+  /**
+   * Which of Your Agents the user allowed for this Job, or null for "all of
+   * them". Kept on the draft so a revision re-casts from the same pool instead of
+   * quietly re-admitting an Agent the user deselected.
+   */
+  agentIds: string[] | null;
+  /** 0 for the first draft, incremented per revision — the UI's proof a re-draft landed. */
+  revision: number;
   draft: DraftedPlan;
   createdAt: string;
 }
@@ -69,6 +72,15 @@ export class JobService {
   /** Reconciles Jobs left "pending"/"running" by a server crash — mirrors AgentService.initialize(). */
   async initialize(): Promise<void> {
     await this.store.mutate((database) => {
+      // Jobs migrated from a schema without chatId, at a time when no chat agent
+      // existed, carry an empty chatId that no Agent will ever match. Adopt them
+      // into a chat once one exists, so they still nest instead of vanishing.
+      const chat = database.agents.find((agent) => agent.kind === "chat");
+      if (chat) {
+        for (const job of database.jobs) {
+          if (!job.chatId) job.chatId = chat.id;
+        }
+      }
       for (const job of database.jobs) {
         if (job.status === "pending" || job.status === "running") {
           job.status = "halted";
@@ -124,18 +136,63 @@ export class JobService {
     return draft;
   }
 
-  async draftJob(name: string, task: string): Promise<JobDraft> {
-    const orchestratorAgentId = await this.getOrchestratorAgentId();
-    const orchestrator = new Orchestrator(new ModelPlanDrafter(this.agents, orchestratorAgentId));
-    const candidates = this.agents
+  /**
+   * Only templates are castable: they are the reusable role definitions. Chats
+   * drive the work rather than doing it, and workers belong to a Job already.
+   * `agentIds` narrows that further to the ones the user left selected.
+   */
+  private castableCandidates(agentIds: string[] | null) {
+    const allowed = agentIds ? new Set(agentIds) : null;
+    return this.agents
       .listAgents()
-      .filter((agent) => agent.id !== orchestratorAgentId)
+      .filter((agent) => agent.kind === "template")
+      .filter((agent) => !allowed || allowed.has(agent.id))
       .map((agent) => ({ id: agent.id, name: agent.name, capabilitySummary: agent.capabilitySummary }));
+  }
 
-    const draft = await orchestrator.draftPlan(task, candidates);
-    const jobDraft: JobDraft = { draftId: randomUUID(), name, task, draft, createdAt: now() };
+  async draftJob(name: string, task: string, chatId?: string, agentIds?: string[]): Promise<JobDraft> {
+    // A specific chat asked, or fall back to the default one. Validating the kind
+    // here stops a template or worker id being passed off as a chat.
+    const chatAgentId = chatId ? this.requireChat(chatId) : await this.getChatAgentId();
+    const orchestrator = new Orchestrator(new ModelPlanDrafter(this.agents, chatAgentId));
+    const allowed = agentIds && agentIds.length > 0 ? agentIds : null;
+
+    const draft = await orchestrator.draftPlan(task, this.castableCandidates(allowed));
+    const jobDraft: JobDraft = {
+      draftId: randomUUID(),
+      chatId: chatAgentId,
+      name,
+      task,
+      agentIds: allowed,
+      revision: 0,
+      draft,
+      createdAt: now(),
+    };
     this.drafts.set(jobDraft.draftId, jobDraft);
     return jobDraft;
+  }
+
+  /**
+   * Re-drafts a pending draft with the user's feedback, replacing it in place so
+   * the draft id stays stable across as many rounds as the user wants. Still just
+   * a draft: nothing is created until approval, so revising is free.
+   */
+  async reviseDraft(draftId: string, feedback: string): Promise<JobDraft> {
+    const pending = this.getDraft(draftId);
+    const orchestrator = new Orchestrator(new ModelPlanDrafter(this.agents, pending.chatId));
+    const revised = await orchestrator.draftPlan(
+      pending.task,
+      this.castableCandidates(pending.agentIds),
+      buildRevisionGuidance(pending.draft, feedback),
+    );
+    const next: JobDraft = {
+      ...pending,
+      draft: revised,
+      revision: pending.revision + 1,
+      createdAt: now(),
+    };
+    this.drafts.set(draftId, next);
+    return next;
   }
 
   async approveDraft(draftId: string): Promise<Job> {
@@ -148,7 +205,13 @@ export class JobService {
     this.runningCount += 1;
     try {
       const pending = this.getDraft(draftId);
-      const job = await Orchestrator.approve(pending.name, pending.task, pending.draft, this.agents);
+      const job = await Orchestrator.approve(
+        pending.name,
+        pending.task,
+        pending.draft,
+        this.agents,
+        pending.chatId,
+      );
 
       await this.store.mutate((database) => {
         database.jobs.push(job);
@@ -194,7 +257,16 @@ export class JobService {
       {
         runner: this.agents,
         courier,
-        workspacePathForAgent: (agentId) => this.agents.getAgent(agentId).workspacePath,
+        workspacePathForAgent: (agentId) => {
+          // Every Agent a Plan casts is a worker, and workers always own a
+          // directory — a null here means a template was cast directly, which
+          // materializeCast is supposed to have already turned into a worker.
+          const { name, workspacePath } = this.agents.getAgent(agentId);
+          if (!workspacePath) {
+            throw new Error(`Agent "${name}" has no workspace — a template was cast without spawning a worker`);
+          }
+          return workspacePath;
+        },
       },
       {
         shouldCancel: () => cancelRequested,
@@ -242,15 +314,25 @@ export class JobService {
       });
   }
 
-  private getOrchestratorAgentId(): Promise<string> {
+  /** Rejects an id that is not a chat, so drafting can't be aimed at a template or worker. */
+  private requireChat(chatId: string): string {
+    const agent = this.agents.getAgent(chatId);
+    if (agent.kind !== "chat") {
+      throw new HttpError(400, `"${agent.name}" is not a Chat — only a Chat can plan work.`);
+    }
+    return agent.id;
+  }
+
+  private getChatAgentId(): Promise<string> {
     if (!this.orchestratorAgentIdPromise) {
       this.orchestratorAgentIdPromise = (async () => {
-        const existing = this.agents.listAgents().find((agent) => agent.name === ORCHESTRATOR_AGENT_NAME);
+        const existing = this.agents.listAgents().find((agent) => agent.kind === "chat");
         if (existing) return existing.id;
         const created = await this.agents.createAgent({
-          name: ORCHESTRATOR_AGENT_NAME,
-          description: "System Agent that drafts Plans for Jobs. Created automatically — do not delete.",
-          instructions: ORCHESTRATOR_INSTRUCTIONS,
+          name: CHAT_AGENT_NAME,
+          description: "Where you ask for work. Plans it, and fans it out to Agents.",
+          instructions: CHAT_INSTRUCTIONS,
+          kind: "chat",
         });
         return created.id;
       })().catch((error: unknown) => {

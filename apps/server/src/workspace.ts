@@ -2,6 +2,13 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Agent } from "./types.js";
 
+/**
+ * An Agent that owns a directory. Templates have `workspacePath: null` and never
+ * reach this file — requiring the narrowed type here is what makes that a
+ * compile-time guarantee rather than a convention.
+ */
+export type WorkspacedAgent = Agent & { workspacePath: string };
+
 export class WorkspaceManager {
   constructor(private readonly root: string) {}
 
@@ -14,7 +21,7 @@ export class WorkspaceManager {
     await mkdir(path.join(this.root, ".deleted"), { recursive: true });
   }
 
-  async create(agent: Agent): Promise<void> {
+  async create(agent: WorkspacedAgent): Promise<void> {
     await mkdir(agent.workspacePath, { recursive: false });
     await this.writeInstructions(agent);
     await writeFile(
@@ -35,17 +42,17 @@ export class WorkspaceManager {
     );
   }
 
-  async writeInstructions(agent: Agent): Promise<void> {
+  async writeInstructions(agent: WorkspacedAgent): Promise<void> {
     const content = [
       "# Platform-managed Agent instructions",
       "",
-      "You are the coding Agent named " + agent.name + ".",
+      "You are the Agent named " + agent.name + ".",
       agent.description ? "Purpose: " + agent.description : "",
       "",
       "## Instructions",
       "",
       agent.instructions ||
-        "Help the user complete coding tasks in this workspace. Explain material results concisely.",
+        "Complete the task you are given in this workspace. Explain material results concisely.",
       "",
       "## Workspace rules",
       "",
@@ -62,7 +69,7 @@ export class WorkspaceManager {
     await writeFile(path.join(agent.workspacePath, "AGENTS.md"), content, "utf8");
   }
 
-  async archive(agent: Agent): Promise<string> {
+  async archive(agent: WorkspacedAgent): Promise<string> {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const destination = path.join(
       this.root,

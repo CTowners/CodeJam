@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
 import { api } from "../../api";
-import type { Agent, CoordinationEvent, Job, JobDraft, JobMessage } from "../../types";
+import type { ChatWork } from "../../lib/chat-work";
+import { DEFAULT_CHAT_KEY } from "../../lib/chat-work";
+import type { Agent } from "../../types";
 import { DraftReview } from "./DraftReview";
 import { JobComposer } from "./JobComposer";
 import { JobEventLog } from "./JobEventLog";
@@ -10,109 +11,101 @@ import { JobTranscript } from "./JobTranscript";
 
 const POLL_MS = 2000;
 
-export function JobScreen({ agents }: { agents: Agent[] }) {
-  const [drafting, setDrafting] = useState(false);
-  const [draft, setDraft] = useState<JobDraft | null>(null);
-  const [approving, setApproving] = useState(false);
-  const [job, setJob] = useState<Job | null>(null);
-  const [messages, setMessages] = useState<JobMessage[]>([]);
-  const [events, setEvents] = useState<CoordinationEvent[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const mountedRef = useRef(true);
-  const jobIdRef = useRef<string | null>(null);
+export function JobScreen({
+  agents,
+  chatId,
+  chatWork,
+}: {
+  agents: Agent[];
+  chatId?: string;
+  /** Held above this component so switching Agents or tabs cannot destroy it. */
+  chatWork: ChatWork;
+}) {
+  const key = chatId ?? DEFAULT_CHAT_KEY;
+  const state = chatWork.get(key);
 
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
+  /**
+   * Writes against the chat that owns the work, not whichever chat happens to be
+   * on screen when the response lands — so a draft that finishes after you switch
+   * away still updates its own chat instead of leaking into the visible one.
+   */
+  const patch = chatWork.patch;
 
   const submitTask = async (input: { name: string; task: string }) => {
-    setDrafting(true);
-    setError(null);
+    const chatKey = key;
+    const forChat = chatId;
+    patch(chatKey, { drafting: true, error: null, name: input.name, task: input.task });
     try {
-      const nextDraft = await api.draftJob(input);
-      if (mountedRef.current) setDraft(nextDraft);
+      // An empty name is omitted rather than sent: the field is optional, and an
+      // empty string fails the server's minimum-length check with a 400.
+      const selected = state.selectedAgentIds;
+      const nextDraft = await api.draftJob({
+        ...(input.name ? { name: input.name } : {}),
+        task: input.task,
+        ...(forChat ? { chatId: forChat } : {}),
+        ...(selected ? { agentIds: selected } : {}),
+      });
+      patch(chatKey, { draft: nextDraft });
     } catch (reason) {
-      if (mountedRef.current) setError(reason instanceof Error ? reason.message : String(reason));
+      patch(chatKey, { error: reason instanceof Error ? reason.message : String(reason) });
     } finally {
-      if (mountedRef.current) setDrafting(false);
+      patch(chatKey, { drafting: false });
     }
   };
 
-  const discardDraft = () => {
-    setDraft(null);
-    setError(null);
+  const discardDraft = () => patch(key, { draft: null, error: null });
+
+  /**
+   * Re-drafts in place. The draft id is stable, so this can be repeated until the
+   * plan is right — and since nothing is created before approval, it costs only a
+   * planning turn.
+   */
+  const reviseDraft = async (feedback: string) => {
+    const chatKey = key;
+    const pending = state.draft;
+    if (!pending) return;
+    patch(chatKey, { revising: true, error: null });
+    try {
+      const revised = await api.reviseDraft(pending.draftId, feedback);
+      patch(chatKey, { draft: revised });
+    } catch (reason) {
+      patch(chatKey, { error: reason instanceof Error ? reason.message : String(reason) });
+    } finally {
+      patch(chatKey, { revising: false });
+    }
   };
 
   const approve = async () => {
-    if (!draft) return;
-    setApproving(true);
-    setError(null);
+    const chatKey = key;
+    const pending = state.draft;
+    if (!pending) return;
+    patch(chatKey, { approving: true, error: null });
     try {
-      const { job: created } = await api.approveDraft(draft.draftId);
-      if (!mountedRef.current) return;
-      setDraft(null);
-      jobIdRef.current = created.id;
-      setJob(created);
-      setMessages([]);
-      setEvents([]);
+      const { job: created } = await api.approveDraft(pending.draftId);
+      patch(chatKey, { draft: null, job: created, messages: [], events: [], name: "", task: "" });
     } catch (reason) {
-      if (mountedRef.current) setError(reason instanceof Error ? reason.message : String(reason));
+      patch(chatKey, { error: reason instanceof Error ? reason.message : String(reason) });
     } finally {
-      if (mountedRef.current) setApproving(false);
+      patch(chatKey, { approving: false });
     }
   };
 
   const cancelJob = async () => {
-    if (!job) return;
+    const chatKey = key;
+    const running = state.job;
+    if (!running) return;
     try {
-      const { job: updated } = await api.cancelJob(job.id);
-      if (mountedRef.current && jobIdRef.current === job.id) setJob(updated);
+      const { job: updated } = await api.cancelJob(running.id);
+      patch(chatKey, { job: updated });
     } catch (reason) {
-      if (mountedRef.current) setError(reason instanceof Error ? reason.message : String(reason));
+      patch(chatKey, { error: reason instanceof Error ? reason.message : String(reason) });
     }
   };
 
-  const startOver = () => {
-    jobIdRef.current = null;
-    setJob(null);
-    setMessages([]);
-    setEvents([]);
-    setError(null);
-  };
+  const startOver = () =>
+    patch(key, { job: null, messages: [], events: [], error: null, name: "", task: "" });
 
-  useEffect(() => {
-    if (!job || (job.status !== "pending" && job.status !== "running")) {
-      return;
-    }
-    let cancelled = false;
-    const id = job.id;
-
-    const poll = async () => {
-      try {
-        const [jobResult, messagesResult, eventsResult] = await Promise.all([
-          api.getJob(id),
-          api.getJobMessages(id),
-          api.getJobEvents(id),
-        ]);
-        if (cancelled || jobIdRef.current !== id) return;
-        setJob(jobResult.job);
-        setMessages(messagesResult.messages);
-        setEvents(eventsResult.events);
-      } catch (reason) {
-        if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
-      }
-    };
-
-    void poll();
-    const timer = window.setInterval(() => void poll(), POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [job?.id, job?.status]);
+  const { draft, job, messages, events, error, drafting, approving, revising } = state;
 
   return (
     <section className="job-screen">
@@ -131,14 +124,46 @@ export function JobScreen({ agents }: { agents: Agent[] }) {
       {error && (
         <div className="error-banner" role="alert">
           <span>{error}</span>
-          <button onClick={() => setError(null)}>×</button>
+          <button onClick={() => patch(key, { error: null })}>×</button>
         </div>
       )}
 
-      {!job && !draft && <JobComposer busy={drafting} onSubmit={submitTask} />}
+      {!job && !draft && drafting && (
+        <div className="drafting-panel">
+          <div className="drafting-orbit" aria-hidden="true">
+            ⌁
+          </div>
+          <h3>Drafting a plan…</h3>
+          <p>
+            The Chat is breaking this into steps and choosing which Agent plays each
+            one. Nothing runs yet — you review and approve the plan first.
+          </p>
+          <p className="drafting-task">“{state.task}”</p>
+        </div>
+      )}
+
+      {!job && !draft && !drafting && (
+        <JobComposer
+          busy={drafting}
+          name={state.name}
+          task={state.task}
+          agents={agents}
+          selectedAgentIds={state.selectedAgentIds}
+          onChange={(changes) => patch(key, changes)}
+          onSubmit={submitTask}
+        />
+      )}
 
       {!job && draft && (
-        <DraftReview draft={draft} agents={agents} busy={approving} onApprove={approve} onDiscard={discardDraft} />
+        <DraftReview
+          draft={draft}
+          agents={agents}
+          busy={approving}
+          revising={revising}
+          onApprove={approve}
+          onDiscard={discardDraft}
+          onRevise={reviseDraft}
+        />
       )}
 
       {job && (

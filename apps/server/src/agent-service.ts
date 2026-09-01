@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { CHAT_INSTRUCTIONS, hasWorkspace } from "./agent-kinds.js";
 import { summarizeCapability } from "./capability-summary.js";
 import type { AppConfig } from "./config.js";
 import { isArkConfigured } from "./config.js";
@@ -54,6 +55,21 @@ export class AgentService implements TurnRunner {
       .agents.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
+  /**
+   * Narrows an Agent to one that can actually run. A template has no workspace
+   * by construction, so reaching a runner with one is a routing mistake, not a
+   * runtime condition — fail with the reason rather than a null path deeper in.
+   */
+  private requireWorkspace(agent: Agent): string {
+    if (!agent.workspacePath) {
+      throw new HttpError(
+        409,
+        `"${agent.name}" defines a role and never runs on its own — cast it from a chat instead.`,
+      );
+    }
+    return agent.workspacePath;
+  }
+
   getAgent(id: string): Agent {
     const agent = this.store.snapshot().agents.find((item) => item.id === id);
     if (!agent) {
@@ -65,27 +81,56 @@ export class AgentService implements TurnRunner {
   async createAgent(input: CreateAgentInput): Promise<Agent> {
     const timestamp = now();
     const id = randomUUID();
-    const instructions = input.instructions?.trim() ?? "";
+    const kind = input.kind ?? "template";
+    // A chat's instructions are the platform's, not the user's: without them the
+    // drafting turn has nothing telling it to answer with a Plan.
+    const instructions = input.instructions?.trim() || (kind === "chat" ? CHAT_INSTRUCTIONS : "");
     const agent: Agent = {
       id,
+      kind,
+      parentChatId: input.parentChatId ?? null,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       instructions,
       capabilitySummary: summarizeCapability(instructions),
       status: "ready",
-      workspacePath: this.workspaces.workspacePath(id),
+      workspacePath: hasWorkspace(kind) ? this.workspaces.workspacePath(id) : null,
       codexThreadId: null,
       lastError: null,
       createdAt: timestamp,
       updatedAt: timestamp,
     };
-    await this.workspaces.create(agent);
+    if (agent.workspacePath) {
+      await this.workspaces.create({ ...agent, workspacePath: agent.workspacePath });
+    }
     await this.store.mutate((database) => database.agents.push(agent));
     return agent;
   }
 
+  /**
+   * Spawns a worker for one Job from a template, copying the role definition's
+   * instructions. The template itself never runs, which is what keeps it reusable
+   * across Jobs and free of any single Job's state.
+   */
+  async spawnWorkerFromTemplate(templateId: string, parentChatId: string): Promise<Agent> {
+    const template = this.getAgent(templateId);
+    return this.createAgent({
+      name: template.name,
+      description: template.description,
+      instructions: template.instructions,
+      kind: "worker",
+      parentChatId,
+    });
+  }
+
   async updateAgent(id: string, input: UpdateAgentInput): Promise<Agent> {
     const current = this.getAgent(id);
+    // A worker is the record of what one Job did. Rewriting its instructions
+    // after the fact would falsify the evidence the transcript is read against,
+    // so it is refused here rather than only disabled in the UI.
+    if (current.kind === "worker") {
+      throw new HttpError(409, `"${current.name}" is a subagent — its record can be inspected but not edited.`);
+    }
     if (current.status === "busy") {
       throw new HttpError(409, "Stop the active run before editing this Agent");
     }
@@ -107,14 +152,18 @@ export class AgentService implements TurnRunner {
       agent.updatedAt = now();
       return structuredClone(agent);
     });
-    await this.workspaces.writeInstructions(updated);
+    if (updated.workspacePath) {
+      await this.workspaces.writeInstructions({ ...updated, workspacePath: updated.workspacePath });
+    }
     return updated;
   }
 
-  async deleteAgent(id: string): Promise<{ archivedWorkspace: string }> {
+  async deleteAgent(id: string): Promise<{ archivedWorkspace: string | null }> {
     const agent = this.getAgent(id);
     await this.cancelExecution(id);
-    const archivedWorkspace = await this.workspaces.archive(agent);
+    const archivedWorkspace = agent.workspacePath
+      ? await this.workspaces.archive({ ...agent, workspacePath: agent.workspacePath })
+      : null;
     await this.store.mutate((database) => {
       database.agents = database.agents.filter((item) => item.id !== id);
       database.messages = database.messages.filter((item) => item.agentId !== id);
@@ -281,7 +330,7 @@ export class AgentService implements TurnRunner {
     try {
       const result = await this.runner.run({
         agentId,
-        workspacePath: agent.workspacePath,
+        workspacePath: this.requireWorkspace(agent),
         prompt,
         threadId: agent.codexThreadId,
       });
@@ -362,7 +411,7 @@ export class AgentService implements TurnRunner {
       }
       const result = await this.runner.run({
         agentId: agentAtStart.id,
-        workspacePath: agentAtStart.workspacePath,
+        workspacePath: this.requireWorkspace(agentAtStart),
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
       });

@@ -1,21 +1,25 @@
 import type { Agent } from "../types";
-import { isOrchestratorAgent } from "../lib/orchestrator";
+import { describeKind, isProtectedAgent } from "../lib/orchestrator";
 import { StatusPill } from "./StatusPill";
 
 export function AgentHeader({
   agent,
+  agents,
   busy,
   onToggleSettings,
   onToggleAgent,
   onDelete,
 }: {
   agent: Agent;
+  /** Needed to tell whether this is the last Chat, which can't be deleted. */
+  agents: Agent[];
   busy: boolean;
   onToggleSettings: () => void;
   onToggleAgent: () => void;
   onDelete: () => void;
 }) {
-  const isSystem = isOrchestratorAgent(agent);
+  const isProtected = isProtectedAgent(agent, agents);
+  const isWorker = agent.kind === "worker";
 
   return (
     <header className="agent-header">
@@ -24,11 +28,7 @@ export function AgentHeader({
           <h1>{agent.name}</h1>
           <StatusPill status={agent.status} />
         </div>
-        <p>
-          {isSystem
-            ? "System Agent that drafts Plans for Jobs. Created automatically."
-            : agent.description || "A Codex coding Agent in an isolated workspace."}
-        </p>
+        <p>{agent.description || describeKind(agent)}</p>
       </div>
       <div className="header-actions">
         <button
@@ -36,12 +36,18 @@ export function AgentHeader({
           onClick={onToggleSettings}
           disabled={busy || agent.status === "busy"}
         >
-          Settings
+          {isWorker ? "Details" : "Settings"}
         </button>
-        <button className="button button-ghost" onClick={onToggleAgent} disabled={busy}>
-          {agent.status === "stopped" ? "Start" : "Stop"}
-        </button>
-        {!isSystem && (
+        {/* A worker is a record of what one Job did; starting or stopping it out
+            from under the Coordinator is not something the user should reach for. */}
+        {!isWorker && (
+          <button className="button button-ghost" onClick={onToggleAgent} disabled={busy}>
+            {agent.status === "stopped" ? "Start" : "Stop"}
+          </button>
+        )}
+        {/* Deleting a worker would strip its name out of the Job transcript that
+            references it, leaving a bare id behind. */}
+        {!isProtected && !isWorker && (
           <button
             className="button button-danger"
             onClick={onDelete}

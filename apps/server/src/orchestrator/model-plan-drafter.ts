@@ -24,6 +24,8 @@ export class ModelPlanDrafter implements PlanDrafter {
     if (!result.ok) {
       throw new Error(`Plan drafting turn failed: ${result.error ?? "unknown error"}`);
     }
+    // Thrown as-is: the Orchestrator distinguishes a malformed reply (retryable)
+    // from a failed turn (not), and wrapping it would erase that distinction.
     return parseDraftedPlan(result.reply);
   }
 }

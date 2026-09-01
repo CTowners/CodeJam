@@ -156,6 +156,7 @@ export class Coordinator {
         return;
       }
       let attempt = 0;
+      let lastRejection: string | undefined;
 
       while (!halted) {
         if (this.shouldCancel()) {
@@ -180,7 +181,7 @@ export class Coordinator {
             trackCopy(agentId, step.needs);
             emit("files_copied_in", step.id, agentId, step.needs.join(", "));
           }
-          const prompt = this.buildPrompt(step, job, messages);
+          const prompt = this.buildPrompt(step, job, messages, lastRejection);
           const turnResult = await this.deps.runner.runTurn(agentId, prompt, COORDINATION_LIMITS.turnTimeoutMs);
           result = turnResult.ok ? { ok: true, reply: turnResult.reply } : { ok: false, error: turnResult.error ?? "Unknown error" };
         } catch (error) {
@@ -218,6 +219,7 @@ export class Coordinator {
             halt(`Step "${step.id}" exhausted retries (validation): ${reason}`, step.id, agentId);
             return;
           }
+          lastRejection = reason;
           emit("turn_retried", step.id, agentId, reason);
           continue;
         }
@@ -301,12 +303,62 @@ export class Coordinator {
     };
   }
 
-  private buildPrompt(step: PlanStep, job: Job, messages: readonly JobMessage[]): string {
+  /**
+   * The turn prompt. Beyond the Step's own instruction this states the file
+   * contract explicitly, because the Agent is judged against it: `produces` is
+   * verified path-by-path after the turn, so an Agent that was never told the
+   * exact path will pick its own, do the work correctly, and still be rejected.
+   *
+   * `lastRejection` is fed back on a retry for the same reason — repeating the
+   * identical prompt after a failure just reproduces the failure.
+   */
+  private buildPrompt(
+    step: PlanStep,
+    job: Job,
+    messages: readonly JobMessage[],
+    lastRejection?: string,
+  ): string {
+    const sections: string[] = [];
+
     if (job.plan.contextMode === "transcript" && messages.length > 0) {
       const transcript = messages.map((message) => `[${message.role}] ${message.content}`).join("\n");
-      return `Sequence so far:\n${transcript}\n\n${step.instruction}`;
+      sections.push(`Sequence so far:\n${transcript}`);
     }
-    return step.instruction;
+
+    sections.push(step.instruction);
+
+    if (step.needs.length > 0) {
+      sections.push(
+        [
+          "These files have been placed in your working directory for you:",
+          ...step.needs.map((path) => `  ${path}`),
+        ].join("\n"),
+      );
+    }
+
+    if (step.produces.length > 0) {
+      sections.push(
+        [
+          "You MUST create exactly these files, at exactly these paths, relative to",
+          "your working directory. The path and spelling must match character for",
+          "character — the file is checked by path, and anything else is treated as",
+          "a failed step even if the content is correct. Each must be non-empty.",
+          ...step.produces.map((path) => `  ${path}`),
+        ].join("\n"),
+      );
+    }
+
+    if (step.replyPattern) {
+      sections.push(
+        `The last line of your reply must match this regular expression: /${step.replyPattern}/`,
+      );
+    }
+
+    if (lastRejection) {
+      sections.push(`Your previous attempt was rejected: ${lastRejection}\nFix that and try again.`);
+    }
+
+    return sections.join("\n\n");
   }
 
   /** Best-effort: a cleanup failure (e.g. the Agent was deleted mid-Job) must never crash run() this late. */

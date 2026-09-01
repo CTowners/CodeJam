@@ -45,6 +45,28 @@ function stripCodeFence(raw: string): string {
   return fenced ? fenced[1]! : trimmed;
 }
 
+/**
+ * Pulls the JSON object out of a reply that wrapped it in prose. Models are told
+ * to answer with the object alone; smaller ones often add a sentence either side.
+ */
+function extractObject(text: string): string {
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  return first >= 0 && last > first ? text.slice(first, last + 1) : text;
+}
+
+/**
+ * Escapes lone backslashes that JSON does not allow.
+ *
+ * `replyPattern` carries a regular expression, and a model writing "^\d+$" emits
+ * a single backslash — valid regex, invalid JSON, and the whole draft is thrown
+ * away over it. Only backslashes that do not begin a legal JSON escape are
+ * doubled, so genuine \n, \", \\ and \uXXXX sequences are left untouched.
+ */
+function escapeLoneBackslashes(text: string): string {
+  return text.replace(/\\(?!["\\/bfnrtu])/g, "\\\\");
+}
+
 export class DraftedPlanParseError extends Error {
   constructor(
     message: string,
@@ -56,12 +78,18 @@ export class DraftedPlanParseError extends Error {
 }
 
 export function parseDraftedPlan(raw: string): DraftedPlan {
-  const candidate = stripCodeFence(raw);
+  const candidate = extractObject(stripCodeFence(raw));
   let json: unknown;
   try {
     json = JSON.parse(candidate);
-  } catch (error) {
-    throw new DraftedPlanParseError(`Not valid JSON: ${(error as Error).message}`, raw);
+  } catch (firstError) {
+    // One repair attempt before giving up: a lone backslash from a regex in
+    // replyPattern is the common case, and re-drafting for it wastes a turn.
+    try {
+      json = JSON.parse(escapeLoneBackslashes(candidate));
+    } catch {
+      throw new DraftedPlanParseError(`Not valid JSON: ${(firstError as Error).message}`, raw);
+    }
   }
   const result = draftedPlanSchema.safeParse(json);
   if (!result.success) {

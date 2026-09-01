@@ -1459,3 +1459,342 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* --- Sidebar tree: Chats -> subagents -------------------------------------
+   Workers are indented under the chat that spawned them so the hierarchy reads
+   at a glance: what you type into, and what it spawned. */
+.tree-branch {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.tree-row .agent-card {
+  flex: 1;
+  min-width: 0;
+}
+
+.tree-twisty {
+  width: 18px;
+  flex: 0 0 18px;
+  background: none;
+  border: none;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 0;
+}
+
+.tree-twisty:disabled {
+  cursor: default;
+  opacity: 0.25;
+}
+
+.agent-card-worker {
+  margin-left: 20px;
+  opacity: 0.85;
+}
+
+.agent-avatar-worker {
+  transform: scale(0.85);
+}
+
+/* Shown instead of the message box for templates and subagents, which have no
+   conversation of their own. */
+.kind-notice {
+  padding: 24px 28px;
+  max-width: 720px;
+}
+
+.kind-notice h2 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.kind-notice p {
+  margin: 0 0 20px;
+  opacity: 0.75;
+  line-height: 1.55;
+}
+
+.kind-notice-instructions pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 6px 0 0;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: rgba(127, 127, 127, 0.12);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Small "+" beside the Your Agents heading: creating a specialist is a different
+   action from starting a Chat, so it gets its own affordance in its own section. */
+.sidebar-add {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.6;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.sidebar-add:hover {
+  opacity: 1;
+}
+
+/* --- Agent picker and plan revision ---------------------------------------
+   Deselecting an Agent narrows what the Chat may cast; revising re-drafts the
+   plan in place. Both happen before anything is created. */
+.agent-picker {
+  margin-top: 18px;
+}
+
+.agent-picker-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.agent-picker-count {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.agent-picker-reset {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--purple);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.agent-picker-reset:hover {
+  color: var(--purple-dark);
+}
+
+.agent-picker-grid {
+  margin-top: 9px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+}
+
+.agent-pick {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 11px;
+  border: 1px solid var(--line);
+  background: white;
+  text-align: left;
+  cursor: pointer;
+  transition: 150ms ease;
+}
+
+.agent-pick:hover:not(:disabled) {
+  border-color: #c9c7bd;
+}
+
+.agent-pick.on {
+  border-color: var(--purple);
+  background: var(--purple-soft);
+}
+
+/* Deselected reads as dimmed rather than struck through: it is still a real
+   Agent, just not one this Job may cast. */
+.agent-pick.off {
+  opacity: 0.5;
+}
+
+.agent-pick:disabled {
+  cursor: default;
+}
+
+.agent-pick-avatar {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #4a415f;
+  color: #dcd4ff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.agent-pick.on .agent-pick-avatar {
+  background: var(--purple);
+  color: white;
+}
+
+.agent-pick-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-pick-copy strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.agent-pick-copy span {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-pick-mark {
+  color: var(--purple);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agent-picker-warn {
+  margin: 9px 0 0;
+  font-size: 12px;
+  color: #6c541b;
+  background: #fff7d8;
+  border-radius: 8px;
+  padding: 8px 11px;
+}
+
+.draft-revise {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.draft-revise label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.draft-revise textarea {
+  width: 100%;
+  margin-top: 7px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  padding: 9px 11px;
+  background: white;
+  resize: vertical;
+  font: inherit;
+}
+
+.draft-revise .button {
+  margin-top: 12px;
+}
+
+/* Shown while a plan is being drafted. A disabled button alone did not read as
+   "this is working, wait" — the whole composer is replaced so there is nothing
+   to click and nothing ambiguous. */
+.drafting-panel {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  box-shadow: 0 12px 36px rgba(43, 42, 38, 0.06);
+  border-radius: 14px;
+  padding: 40px 22px;
+  text-align: center;
+}
+
+.drafting-orbit {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--purple-soft);
+  color: var(--purple);
+  font-size: 20px;
+  animation: drafting-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes drafting-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.12); opacity: 0.72; }
+}
+
+.drafting-panel h3 {
+  margin: 0 0 8px;
+  font-size: 16px;
+}
+
+.drafting-panel p {
+  margin: 0 auto;
+  max-width: 460px;
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.drafting-task {
+  margin-top: 14px !important;
+  font-style: italic;
+  color: var(--ink) !important;
+}
+
+.revision-chip {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--purple-soft);
+  color: var(--purple-dark);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.draft-revise-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.draft-revise-help {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.draft-revise-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.draft-revise-pending {
+  font-size: 12px;
+  color: #6c541b;
+  background: #fff7d8;
+  border-radius: 8px;
+  padding: 6px 10px;
+}

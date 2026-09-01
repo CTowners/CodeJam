@@ -49,6 +49,7 @@ export const api = {
     name: string;
     description: string;
     instructions: string;
+    kind?: "chat" | "template";
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -87,7 +88,12 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
-  draftJob: (body: { name?: string; task: string }) =>
+  reviseDraft: (draftId: string, feedback: string) =>
+    request<JobDraft>("/api/jobs/drafts/" + draftId + "/revise", {
+      method: "POST",
+      body: JSON.stringify({ feedback }),
+    }),
+  draftJob: (body: { name?: string; task: string; chatId?: string; agentIds?: string[] }) =>
     request<JobDraft>("/api/jobs/draft", {
       method: "POST",
       body: JSON.stringify(body),

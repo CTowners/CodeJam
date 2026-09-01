@@ -8,7 +8,7 @@ import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { jobRoutes } from "./job-routes.js";
-import { ORCHESTRATOR_AGENT_NAME } from "./job-service.js";
+import { isChattable } from "./agent-kinds.js";
 import type { JobService } from "./job-service.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
@@ -17,8 +17,11 @@ const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
+  // "worker" is deliberately not accepted: workers exist only as the product of
+  // approving a Plan, never as something created directly.
+  kind: z.enum(["chat", "template"]).optional(),
 });
-const updateAgentBody = createAgentBody.partial().refine(
+const updateAgentBody = createAgentBody.omit({ kind: true }).partial().refine(
   (value) => Object.keys(value).length > 0,
   "At least one field is required",
 );
@@ -129,11 +132,12 @@ export async function createApp(
 
   app.delete("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    // Refused here, not just hidden in the UI — the Orchestrator is the one
-    // shared system Agent every Job drafts through; deleting it breaks
-    // drafting until it's lazily recreated.
-    if (service.getAgent(id).name === ORCHESTRATOR_AGENT_NAME) {
-      throw new HttpError(403, "The Orchestrator Agent is required for Job drafting and can't be deleted");
+    // Refused here, not just hidden in the UI. Only the LAST chat is protected:
+    // drafting needs one to exist, but now that chats are user-creatable, blocking
+    // every deletion would let them pile up with no way to clear them.
+    const target = service.getAgent(id);
+    if (target.kind === "chat" && service.listAgents().filter((a) => a.kind === "chat").length <= 1) {
+      throw new HttpError(403, "This is your last Chat — drafting work needs one, so it can't be deleted");
     }
     return service.deleteAgent(id);
   });
@@ -161,6 +165,12 @@ export async function createApp(
   app.post("/api/agents/:id/messages", async (request, reply) => {
     const { id } = agentIdParams.parse(request.params);
     const body = messageBody.parse(request.body);
+    // Chats and templates both hold a conversation; a worker does not, because
+    // it belongs to a running Job and messaging it would race the Coordinator.
+    const agent = service.getAgent(id);
+    if (!isChattable(agent)) {
+      throw new HttpError(409, `"${agent.name}" is a subagent in a Job — direct it through its Chat.`);
+    }
     const result = await service.sendMessage(id, body.content);
     return reply.code(202).send(result);
   });

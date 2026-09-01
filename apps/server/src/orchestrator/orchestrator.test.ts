@@ -77,38 +77,70 @@ describe("Orchestrator.draftPlan", () => {
 });
 
 describe("Orchestrator.approve", () => {
-  it("is static (no PlanDrafter/instance needed) and passes an \"existing\" cast proposal through unchanged", async () => {
+  it("is static (no PlanDrafter/instance needed) and spawns a worker from an \"existing\" template", async () => {
+    const spawnedFrom: string[] = [];
     const creator: AgentCreator = {
       createAgent: async () => {
         throw new Error("should not be called");
       },
+      spawnWorkerFromTemplate: async (templateId) => {
+        spawnedFrom.push(templateId);
+        return { id: "worker-from-agent-1" };
+      },
+      getAgent: () => ({ kind: "template", name: "Implementer" }),
     };
 
-    const job = await Orchestrator.approve("My Job", "do the thing", validDraft, creator);
+    const job = await Orchestrator.approve("My Job", "do the thing", validDraft, creator, "chat-1");
 
-    expect(job.castByRole.implementer).toBe("agent-1");
+    // The template is cloned into a fresh worker rather than cast directly, so
+    // the role definition itself never runs and never accumulates Job state.
+    expect(spawnedFrom).toEqual(["agent-1"]);
+    expect(job.castByRole.implementer).toBe("worker-from-agent-1");
+    expect(job.chatId).toBe("chat-1");
     expect(job.status).toBe("pending");
     expect(job.cursor).toBe(0);
     expect(job.haltedReason).toBeNull();
     expect(job.plan).toEqual(validDraft.plan);
   });
 
-  it("materializes a \"new\" cast proposal into a real Agent before building the Job", async () => {
+  it("refuses a cast that names something other than one of Your Agents", async () => {
+    const creator: AgentCreator = {
+      createAgent: async () => ({ id: "unused" }),
+      spawnWorkerFromTemplate: async () => {
+        throw new Error("should not be called");
+      },
+      // The model only ever sees template ids, so a worker id here is a
+      // hallucinated or stale one — caught where the Agent would be created.
+      getAgent: () => ({ kind: "worker", name: "Diet Researcher" }),
+    };
+
+    await expect(
+      Orchestrator.approve("My Job", "do the thing", validDraft, creator, "chat-1"),
+    ).rejects.toThrow(/is a worker, not one of Your Agents/);
+  });
+
+  it("materializes a \"new\" cast proposal into a real worker before building the Job", async () => {
     const draftWithNewAgent: DraftedPlan = {
       plan: validDraft.plan,
       castByRole: { implementer: { kind: "new", name: "Fresh Agent", instructions: "be fresh" } },
     };
-    const created: { name: string; instructions: string }[] = [];
+    const created: { name: string; instructions: string; kind?: string; parentChatId?: string | null }[] = [];
     const creator: AgentCreator = {
       createAgent: async (input) => {
         created.push(input);
         return { id: "new-agent-id" };
       },
+      spawnWorkerFromTemplate: async () => {
+        throw new Error("should not be called");
+      },
+      getAgent: () => ({ kind: "template", name: "unused" }),
     };
 
-    const job = await Orchestrator.approve("My Job", "do the thing", draftWithNewAgent, creator);
+    const job = await Orchestrator.approve("My Job", "do the thing", draftWithNewAgent, creator, "chat-1");
 
-    expect(created).toEqual([{ name: "Fresh Agent", instructions: "be fresh" }]);
+    expect(created).toEqual([
+      { name: "Fresh Agent", instructions: "be fresh", kind: "worker", parentChatId: "chat-1" },
+    ]);
     expect(job.castByRole.implementer).toBe("new-agent-id");
   });
 });

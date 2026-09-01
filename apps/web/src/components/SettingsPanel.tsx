@@ -5,13 +5,16 @@ export function SettingsPanel({
   form,
   busy,
   workspacePath,
+  readOnly = false,
   onChange,
   onSubmit,
   onClose,
 }: {
   form: AgentFormValues;
   busy: boolean;
-  workspacePath: string;
+  workspacePath: string | null;
+  /** Subagents are evidence of what a Job did — inspectable, never editable. */
+  readOnly?: boolean;
   onChange: (form: AgentFormValues) => void;
   onSubmit: (event: React.FormEvent) => void;
   onClose: () => void;
@@ -33,6 +36,7 @@ export function SettingsPanel({
             onChange={(event) => onChange({ ...form, name: event.target.value })}
             required
             maxLength={80}
+            readOnly={readOnly}
           />
         </label>
         <label>
@@ -41,6 +45,7 @@ export function SettingsPanel({
             value={form.description}
             onChange={(event) => onChange({ ...form, description: event.target.value })}
             maxLength={500}
+            readOnly={readOnly}
           />
         </label>
       </div>
@@ -51,13 +56,16 @@ export function SettingsPanel({
           onChange={(event) => onChange({ ...form, instructions: event.target.value })}
           rows={5}
           maxLength={10_000}
+          readOnly={readOnly}
         />
       </label>
       <div className="panel-footer">
-        <code>{workspacePath}</code>
-        <button className="button button-primary" disabled={busy}>
-          {busy ? <Spinner /> : "Save changes"}
-        </button>
+        <code>{workspacePath ?? "No workspace — this Agent holds instructions only"}</code>
+        {!readOnly && (
+          <button className="button button-primary" disabled={busy}>
+            {busy ? <Spinner /> : "Save changes"}
+          </button>
+        )}
       </div>
     </form>
   );

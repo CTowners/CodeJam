@@ -101,9 +101,30 @@ describe("Agent lifecycle", () => {
     expect(service.listAgents()).toHaveLength(0);
   });
 
+  it("gives a Chat its planning instructions even when the caller sends none", async () => {
+    const service = await makeService();
+    // The client only names a chat. Without server-supplied instructions the
+    // drafting turn has nothing telling it to answer with a Plan, and it burns
+    // its whole timeout doing the task itself instead.
+    const chat = await service.createAgent({ name: "Chat", kind: "chat", instructions: "" });
+
+    expect(chat.instructions).toContain("respond with a Plan");
+    expect(chat.capabilitySummary.length).toBeGreaterThan(0);
+  });
+
+  it("refuses to edit a subagent, so a Job's record can't be rewritten after the fact", async () => {
+    const service = await makeService();
+    const worker = await service.createAgent({ name: "Spawned", kind: "worker" });
+
+    await expect(service.updateAgent(worker.id, { instructions: "rewritten" })).rejects.toMatchObject({
+      statusCode: 409,
+    });
+    expect(service.getAgent(worker.id).instructions).toBe("");
+  });
+
   it("persists a playground conversation", async () => {
     const service = await makeService();
-    const agent = await service.createAgent({ name: "Coder" });
+    const agent = await service.createAgent({ name: "Coder", kind: "worker" });
     const { run } = await service.sendMessage(agent.id, "write hello world");
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
     const messages = service.getMessages(agent.id);
@@ -123,7 +144,7 @@ describe("Agent lifecycle", () => {
       isAvailable: async () => true,
     };
     const service = await makeService(runner);
-    const agent = await service.createAgent({ name: "Concurrent" });
+    const agent = await service.createAgent({ name: "Concurrent", kind: "worker" });
     const attempts = await Promise.allSettled([
       service.sendMessage(agent.id, "first"),
       service.sendMessage(agent.id, "second"),
@@ -151,7 +172,7 @@ describe("Agent lifecycle", () => {
       cancel: async () => false,
       isAvailable: async () => true,
     });
-    const agent = await service.createAgent({ name: "Busy" });
+    const agent = await service.createAgent({ name: "Busy", kind: "worker" });
     const { run } = await service.sendMessage(agent.id, "first");
 
     await expect(service.startAgent(agent.id)).rejects.toMatchObject({ statusCode: 409 });
@@ -167,7 +188,7 @@ describe("Agent lifecycle", () => {
 describe("AgentService as a TurnRunner (Job turns)", () => {
   it("runs a turn and updates codexThreadId, without creating a Playground message", async () => {
     const service = await makeService();
-    const agent = await service.createAgent({ name: "Turner" });
+    const agent = await service.createAgent({ name: "Turner", kind: "worker" });
 
     const result = await service.runTurn(agent.id, "do the step", 5_000);
 
@@ -178,7 +199,7 @@ describe("AgentService as a TurnRunner (Job turns)", () => {
 
   it("fails without throwing when Ark is not configured", async () => {
     const service = await makeService(new FakeRunner(), { ARK_API_KEY: "", ARK_MODEL: "" });
-    const agent = await service.createAgent({ name: "Keyless" });
+    const agent = await service.createAgent({ name: "Keyless", kind: "worker" });
 
     const result = await service.runTurn(agent.id, "do the step", 5_000);
 
@@ -205,7 +226,7 @@ describe("AgentService as a TurnRunner (Job turns)", () => {
       cancel: async () => false,
       isAvailable: async () => true,
     });
-    const agent = await service.createAgent({ name: "Busy" });
+    const agent = await service.createAgent({ name: "Busy", kind: "worker" });
 
     const first = service.runTurn(agent.id, "first", 5_000);
     const second = await service.runTurn(agent.id, "second", 5_000);
@@ -219,7 +240,7 @@ describe("AgentService as a TurnRunner (Job turns)", () => {
 
   it("clears codexThreadId on resetMemory", async () => {
     const service = await makeService();
-    const agent = await service.createAgent({ name: "Forgetful" });
+    const agent = await service.createAgent({ name: "Forgetful", kind: "worker" });
     await service.runTurn(agent.id, "do the step", 5_000);
     expect(service.getAgent(agent.id).codexThreadId).not.toBeNull();
 
@@ -231,7 +252,7 @@ describe("AgentService as a TurnRunner (Job turns)", () => {
   it("classifies its own watchdog timeout distinctly from a genuine external cancellation", async () => {
     const runner = makeCancellableRunner();
     const service = await makeService(runner);
-    const agent = await service.createAgent({ name: "Slow" });
+    const agent = await service.createAgent({ name: "Slow", kind: "worker" });
 
     const result = await service.runTurn(agent.id, "do it", 20);
 
@@ -243,7 +264,7 @@ describe("AgentService as a TurnRunner (Job turns)", () => {
   it("keeps the original message when cancellation comes from outside the watchdog", async () => {
     const runner = makeCancellableRunner();
     const service = await makeService(runner);
-    const agent = await service.createAgent({ name: "Cancelled" });
+    const agent = await service.createAgent({ name: "Cancelled", kind: "worker" });
 
     const turnPromise = service.runTurn(agent.id, "do it", 60_000);
     await runner.started;

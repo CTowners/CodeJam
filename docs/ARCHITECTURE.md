@@ -15,6 +15,21 @@ flowchart LR
     Process --> Ark
 ```
 
+## Agent kinds
+
+Three kinds, which decide where an Agent appears and what it may do
+(`apps/server/src/agent-kinds.ts`):
+
+| Kind | Sidebar | Chattable | Plans and fans out | Cast by a Plan |
+| --- | --- | --- | --- | --- |
+| `chat` | "Chats" | Yes | Yes | No |
+| `template` | "Your Agents" | Yes, one-to-one | No | Yes |
+| `worker` | nested under its Chat | No | No | No |
+
+Casting a `template` never runs it — it is cloned into a fresh `worker` for that
+Job. So a template stays a reusable role definition, each Job gets isolated
+Agents, and a worker remains a read-only record of what that Job did.
+
 ## Components
 
 ### Web UI
@@ -44,7 +59,8 @@ Interrupted Runs become `cancelled` after a restart.
 ### Storage
 
 ```text
-data/launchpad.json       Agent, message, and Run metadata
+data/launchpad.json       Agent, message, Run, Job, and coordination metadata
+data/jobs/JobID/staging/  Per-Job staging area files move through
 workspaces/AgentID/       Agent-created files
 workspaces/.deleted/      Archived deleted workspaces
 codex-home/               Codex configuration and sessions
@@ -79,7 +95,7 @@ this section is the one-page picture of the same design.
 
 ```mermaid
 flowchart TB
-    Task["Task prompt"] --> Orch["Orchestrator — judgment, upstream, once per Job"]
+    Task["Task prompt"] --> Orch["Chat — judgment, upstream, once per Job"]
     Orch -->|"drafts Plan; casts each step by matching<br/>Agent.capabilitySummary"| Draft["Drafted Plan + cast"]
     Draft --> Gate{{"Human reviews and approves<br/>— trust boundary: nothing runs before this"}}
     Gate -->|approved| Coord["Coordinator — deterministic, downstream"]
@@ -101,7 +117,7 @@ flowchart TB
 ```
 
 - **Trust boundary:** the human-approval gate between drafting and execution —
-  the Orchestrator's one judgment call (matching, planning) is always reviewed
+  the Chat's one judgment call (matching, planning) is always reviewed
   before the Coordinator's deterministic execution ever starts.
 - **Data flow:** real files, not descriptions of them, move step to step
   through the staging area; Agents never see each other's workspaces directly.
@@ -110,8 +126,12 @@ flowchart TB
   auth/config problem halts immediately with a recorded reason instead of
   wasting retries it can't fix — the Job's `haltedReason` and the event log
   are the enforcement/instrumentation evidence for a demo.
-- **Scope:** one Job runs at a time; no orchestrator-spawned Agents beyond the
-  draft-then-materialize flow; no mid-Job reassignment to a different Agent yet.
+- **Fan-out:** independent Steps run in parallel, and the drafting prompt now
+  actively solicits that shape — one Step per independent part, each with its own
+  role label, optionally followed by a single Step that `needs` all their outputs
+  and synthesizes them. Sequencing comes only from real file dependencies.
+- **Scope:** one Job runs at a time; every Agent a Plan casts is created through
+  the draft-then-materialize flow; no mid-Job reassignment to a different Agent yet.
 
 ## Extension seams
 
