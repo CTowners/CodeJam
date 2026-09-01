@@ -1,6 +1,4 @@
-import type { CapabilityCandidate } from "./plan-drafter.js";
-
-const RESPONSE_CONTRACT = `Respond with ONLY a single JSON object, no prose, no markdown fences. Shape:
+export const RESPONSE_CONTRACT = `Respond with ONLY a single JSON object, no prose, no markdown fences. Shape:
 
 {
   "plan": {
@@ -33,29 +31,3 @@ Rules:
   fresh Agent is not free, so don't default to it.
 - Keep the plan as short as correctness allows. Prefer one step per specialist
   concern over many trivial steps.`;
-
-export function buildDraftPrompt(
-  task: string,
-  candidates: readonly CapabilityCandidate[],
-  guidance?: string,
-): string {
-  const candidateList =
-    candidates.length > 0
-      ? candidates.map((c) => `- id: ${c.id}\n  name: ${c.name}\n  capabilitySummary: ${c.capabilitySummary || "(none yet)"}`).join("\n")
-      : "(none — every role will need a \"new\" cast proposal)";
-
-  const guidanceBlock = guidance ? `\nYour previous draft was rejected:\n${guidance}\nFix it and try again.\n` : "";
-
-  return [
-    "You are the Orchestrator for a multi-Agent coding assistant.",
-    "Draft an ordered, dependency-aware Plan of Steps for this task, and propose",
-    "which Agent should play each Step's role.",
-    "",
-    `Task: ${task}`,
-    "",
-    "Existing Agents you may cast (matched by capabilitySummary, not by name):",
-    candidateList,
-    guidanceBlock,
-    RESPONSE_CONTRACT,
-  ].join("\n");
-}

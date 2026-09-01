@@ -276,15 +276,38 @@ button {
   margin-top: 3px;
 }
 
-.agent-list-system {
+.agent-list-chats {
   padding-bottom: 6px;
   margin-bottom: 6px;
   border-bottom: 1px solid #2e2e2a;
 }
 
-.agent-avatar-system {
-  color: #f3ecd8;
-  background: #6b5a2e;
+.agent-avatar-chat {
+  color: #dcd4ff;
+  background: #4a415f;
+  font-size: 15px;
+}
+
+.sidebar-label-agents {
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+}
+
+.button-small {
+  min-height: unset;
+  padding: 4px 9px;
+  font-size: 10px;
+}
+
+.create-agent-button {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.create-agent-button span {
+  font-size: 13px;
 }
 
 .mini-dot,
@@ -620,6 +643,12 @@ textarea:focus {
 .playground h2 {
   margin: 3px 0 0;
   font-size: 16px;
+}
+
+.playground-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .session-info {
@@ -1003,8 +1032,6 @@ textarea:focus {
   font-size: 20px;
 }
 
-.job-composer,
-.draft-review,
 .job-run {
   background: var(--paper);
   border: 1px solid var(--line);
@@ -1013,56 +1040,85 @@ textarea:focus {
   padding: 22px;
 }
 
-.job-composer label {
-  display: block;
-  margin-top: 14px;
+.job-screen-body {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
 }
 
-.job-composer label:first-of-type {
-  margin-top: 22px;
+.job-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.job-composer input,
-.job-composer textarea {
+.job-list-item {
   width: 100%;
-  margin-top: 7px;
+  text-align: left;
   border: 1px solid var(--line);
-  border-radius: 9px;
-  padding: 9px 11px;
-  background: white;
-  resize: vertical;
+  background: var(--paper);
+  border-radius: 11px;
+  padding: 10px 12px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  transition: 150ms ease;
 }
 
-.job-composer .button {
-  margin-top: 16px;
+.job-list-item strong {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.draft-review-header {
+.job-list-item:hover {
+  border-color: #c9c6bb;
+}
+
+.job-list-item.selected {
+  border-color: var(--purple);
+  box-shadow: 0 0 0 1px var(--purple);
+}
+
+.job-detail-empty {
+  margin: 0;
+}
+
+/* Rendered inline in the chat transcript — a message-assistant's plan reply,
+   never the raw JSON it was parsed from. */
+.plan-card {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  box-shadow: 0 12px 36px rgba(43, 42, 38, 0.06);
+  border-radius: 14px;
+  padding: 18px;
+}
+
+.plan-card-header {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
   gap: 16px;
+  margin-bottom: 14px;
 }
 
-.draft-review-header h2 {
-  margin: 3px 0 0;
-  font-size: 18px;
-}
-
-.draft-review-actions {
-  display: flex;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.draft-review-hint {
-  color: var(--muted);
+.plan-card-invalid {
+  border-color: #edc4c0;
+  background: #fae8e6;
+  color: #a13f3f;
   font-size: 12px;
-  line-height: 1.6;
-  margin: 14px 0 18px;
-  padding: 10px 12px;
-  background: #f0efea;
-  border-radius: 9px;
+}
+
+.plan-card-invalid strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.plan-card-invalid p {
+  margin: 0;
 }
 
 .plan-steps {
@@ -1370,7 +1426,8 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
-  .job-run-body {
+  .job-run-body,
+  .job-screen-body {
     grid-template-columns: 1fr;
   }
 }

@@ -101,6 +101,25 @@ describe("Agent lifecycle", () => {
     expect(service.listAgents()).toHaveLength(0);
   });
 
+  it("forces the canonical instructions/description for kind: orchestrator, ignoring any client-supplied text", async () => {
+    const service = await makeService();
+    const chat = await service.createAgent({
+      name: "My planning chat",
+      kind: "orchestrator",
+      description: "client-supplied, should be ignored",
+      instructions: "client-supplied, should be ignored",
+    });
+
+    expect(chat.kind).toBe("orchestrator");
+    expect(chat.name).toBe("My planning chat");
+    expect(chat.instructions).not.toContain("client-supplied");
+    expect(chat.instructions).toMatch(/DRAFT_PLAN/);
+    expect(chat.description).not.toContain("client-supplied");
+
+    const ordinary = await service.createAgent({ name: "Ordinary Agent", instructions: "do work" });
+    expect(ordinary.kind).toBeUndefined();
+  });
+
   it("persists a playground conversation", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Coder" });

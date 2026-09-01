@@ -29,7 +29,7 @@ const planStepSchema = z.object({
   replyPattern: nullableString,
 });
 
-const draftedPlanSchema = z.object({
+export const draftedPlanSchema = z.object({
   plan: z.object({
     steps: z.array(planStepSchema).min(1),
     contextMode: z.enum(["none", "transcript"]),
@@ -55,6 +55,35 @@ export class DraftedPlanParseError extends Error {
   }
 }
 
+/**
+ * Shared by both entry points below: the zod schema's transforms produce
+ * `replyPattern: string | undefined` as an always-present key, which
+ * `exactOptionalPropertyTypes` rejects for PlanStep's optional field — so the
+ * object is rebuilt here with the key omitted entirely when absent, once,
+ * rather than duplicating this reconstruction at every caller.
+ */
+function toDraftedPlan(raw: string, data: z.infer<typeof draftedPlanSchema>): DraftedPlan {
+  const missingRoles = data.plan.steps.map((step) => step.role).filter((role) => !(role in data.castByRole));
+  if (missingRoles.length > 0) {
+    throw new DraftedPlanParseError(`castByRole is missing an entry for role(s): ${missingRoles.join(", ")}`, raw);
+  }
+  return {
+    plan: {
+      steps: data.plan.steps.map((step) => ({
+        id: step.id,
+        role: step.role,
+        instruction: step.instruction,
+        needs: step.needs,
+        produces: step.produces,
+        ...(step.replyPattern !== undefined ? { replyPattern: step.replyPattern } : {}),
+      })),
+      contextMode: data.plan.contextMode,
+      source: data.plan.source,
+    },
+    castByRole: data.castByRole,
+  };
+}
+
 export function parseDraftedPlan(raw: string): DraftedPlan {
   const candidate = stripCodeFence(raw);
   let json: unknown;
@@ -67,25 +96,19 @@ export function parseDraftedPlan(raw: string): DraftedPlan {
   if (!result.success) {
     throw new DraftedPlanParseError(`Did not match the expected shape: ${result.error.message}`, raw);
   }
-  const missingRoles = result.data.plan.steps
-    .map((step) => step.role)
-    .filter((role) => !(role in result.data.castByRole));
-  if (missingRoles.length > 0) {
-    throw new DraftedPlanParseError(`castByRole is missing an entry for role(s): ${missingRoles.join(", ")}`, raw);
+  return toDraftedPlan(raw, result.data);
+}
+
+/**
+ * Same validation as parseDraftedPlan, for a value that's already a parsed
+ * JSON object (an HTTP request body) rather than a raw model-reply string —
+ * used to revalidate a client-submitted plan on /api/jobs/approve.
+ */
+export function parseDraftedPlanValue(value: unknown): DraftedPlan {
+  const raw = JSON.stringify(value);
+  const result = draftedPlanSchema.safeParse(value);
+  if (!result.success) {
+    throw new DraftedPlanParseError(`Did not match the expected shape: ${result.error.message}`, raw);
   }
-  return {
-    plan: {
-      steps: result.data.plan.steps.map((step) => ({
-        id: step.id,
-        role: step.role,
-        instruction: step.instruction,
-        needs: step.needs,
-        produces: step.produces,
-        ...(step.replyPattern !== undefined ? { replyPattern: step.replyPattern } : {}),
-      })),
-      contextMode: result.data.plan.contextMode,
-      source: result.data.plan.source,
-    },
-    castByRole: result.data.castByRole,
-  };
+  return toDraftedPlan(raw, result.data);
 }

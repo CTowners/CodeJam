@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, setAuthToken } from "./api";
-import type { Agent, AgentFormValues, AgentRun, Message, SystemInfo } from "./types";
+import type { Agent, AgentFormValues, AgentRun, DraftedPlan, Message, SystemInfo } from "./types";
 import { AuthGate, ConnectingScreen } from "./components/AuthScreen";
 import { Sidebar } from "./components/Sidebar";
 import { ConfigBanner } from "./components/ConfigBanner";
@@ -10,6 +10,7 @@ import { Playground } from "./components/Playground";
 import { CreateAgentModal } from "./components/CreateAgentModal";
 import { EmptyAgentState } from "./components/EmptyAgentState";
 import { JobScreen } from "./components/job/JobScreen";
+import { isDraftTriggerMessage, isOrchestratorAgent } from "./lib/orchestrator";
 
 type View = "playground" | "jobs";
 
@@ -34,6 +35,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [authRequired, setAuthRequired] = useState<boolean | null>(null);
   const [authInput, setAuthInput] = useState("");
+  const [drafting, setDrafting] = useState(false);
+  const [approvingPlanFor, setApprovingPlanFor] = useState<string | null>(null);
+  const [focusJobId, setFocusJobId] = useState<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
   const mountedRef = useRef(true);
   const pollingRunIds = useRef(new Set<string>());
@@ -127,6 +131,63 @@ export default function App() {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const createNewChat = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { agent } = await api.createAgent({ name: "New Chat", kind: "orchestrator" });
+      await refreshAgents();
+      setSelectedId(agent.id);
+      setView("playground");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const draftPlan = async () => {
+    if (!selected) return;
+    setDrafting(true);
+    setError(null);
+    try {
+      const result = await api.draftPlan(selected.id);
+      if (selectedIdRef.current === selected.id) {
+        setMessages((current) => [...current, result.message]);
+        setActiveRun(result.run);
+      }
+      setAgents((current) =>
+        current.map((agent) => (agent.id === selected.id ? { ...agent, status: "busy" } : agent)),
+      );
+      await pollRun(result.run.id, selected.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      await refreshAgents();
+    } finally {
+      setDrafting(false);
+    }
+  };
+
+  const approvePlan = async (draft: DraftedPlan, messageId: string) => {
+    if (!selected) return;
+    setApprovingPlanFor(messageId);
+    setError(null);
+    try {
+      const task =
+        messages
+          .filter((message) => message.role === "user" && !isDraftTriggerMessage(message.content))
+          .map((message) => message.content)
+          .join("\n\n") || selected.name;
+      const { job } = await api.approvePlan({ name: selected.name, task, draft });
+      setFocusJobId(job.id);
+      setView("jobs");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setApprovingPlanFor(null);
     }
   };
 
@@ -268,6 +329,7 @@ export default function App() {
           setView("playground");
           setSelectedId(id);
         }}
+        onNewChat={() => void createNewChat()}
         onCreateClick={() => {
           setForm(emptyForm);
           setShowCreate(true);
@@ -297,7 +359,7 @@ export default function App() {
         )}
 
         {view === "jobs" ? (
-          <JobScreen agents={agents} />
+          <JobScreen agents={agents} focusJobId={focusJobId} onFocusHandled={() => setFocusJobId(null)} />
         ) : selected ? (
           <>
             <AgentHeader
@@ -308,7 +370,7 @@ export default function App() {
               onDelete={deleteAgent}
             />
 
-            {showSettings && (
+            {showSettings && !isOrchestratorAgent(selected) && (
               <SettingsPanel
                 form={form}
                 busy={busy}
@@ -321,10 +383,15 @@ export default function App() {
 
             <Playground
               agent={selected}
+              agents={agents}
               system={system}
               messages={messages}
               activeRun={activeRun}
               onSend={sendMessage}
+              onDraftPlan={() => void draftPlan()}
+              drafting={drafting}
+              onApprovePlan={(draft, messageId) => void approvePlan(draft, messageId)}
+              approvingPlanFor={approvingPlanFor}
             />
           </>
         ) : (

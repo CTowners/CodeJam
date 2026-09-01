@@ -15,7 +15,7 @@ export function AgentHeader({
   onToggleAgent: () => void;
   onDelete: () => void;
 }) {
-  const isSystem = isOrchestratorAgent(agent);
+  const isChat = isOrchestratorAgent(agent);
 
   return (
     <header className="agent-header">
@@ -24,24 +24,23 @@ export function AgentHeader({
           <h1>{agent.name}</h1>
           <StatusPill status={agent.status} />
         </div>
-        <p>
-          {isSystem
-            ? "System Agent that drafts Plans for Jobs. Created automatically."
-            : agent.description || "A Codex coding Agent in an isolated workspace."}
-        </p>
+        <p>{agent.description || "A Codex coding Agent in an isolated workspace."}</p>
       </div>
       <div className="header-actions">
-        <button
-          className="button button-ghost"
-          onClick={onToggleSettings}
-          disabled={busy || agent.status === "busy"}
-        >
-          Settings
-        </button>
+        {/* A chat's description/instructions are server-owned — Settings has nothing to edit. */}
+        {!isChat && (
+          <button
+            className="button button-ghost"
+            onClick={onToggleSettings}
+            disabled={busy || agent.status === "busy"}
+          >
+            Settings
+          </button>
+        )}
         <button className="button button-ghost" onClick={onToggleAgent} disabled={busy}>
           {agent.status === "stopped" ? "Start" : "Stop"}
         </button>
-        {!isSystem && (
+        {!isChat && (
           <button
             className="button button-danger"
             onClick={onDelete}

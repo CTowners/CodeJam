@@ -8,8 +8,8 @@ import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { jobRoutes } from "./job-routes.js";
-import { ORCHESTRATOR_AGENT_NAME } from "./job-service.js";
 import type { JobService } from "./job-service.js";
+import { buildDraftTriggerMessage } from "./orchestrator/instructions.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
 const runIdParams = z.object({ id: z.string().uuid() });
@@ -17,11 +17,15 @@ const createAgentBody = z.object({
   name: z.string().trim().min(1).max(80),
   description: z.string().max(500).optional(),
   instructions: z.string().max(10_000).optional(),
+  kind: z.literal("orchestrator").optional(),
 });
-const updateAgentBody = createAgentBody.partial().refine(
-  (value) => Object.keys(value).length > 0,
-  "At least one field is required",
-);
+const updateAgentBody = z
+  .object({
+    name: z.string().trim().min(1).max(80).optional(),
+    description: z.string().max(500).optional(),
+    instructions: z.string().max(10_000).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, "At least one field is required");
 const messageBody = z.object({
   content: z.string().trim().min(1).max(50_000),
 });
@@ -124,18 +128,40 @@ export async function createApp(
   app.patch("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
     const body = updateAgentBody.parse(request.body);
+    // A chat's description/instructions are the server's to own (they encode
+    // its dual-mode behavior) — refused here, not just hidden in the UI.
+    // Renaming is still allowed; that's the whole point of a rename-able chat.
+    if (service.getAgent(id).kind === "orchestrator" && (body.description !== undefined || body.instructions !== undefined)) {
+      throw new HttpError(403, "A chat's description and instructions are managed automatically — only its name can be changed");
+    }
     return { agent: await service.updateAgent(id, body) };
   });
 
   app.delete("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
-    // Refused here, not just hidden in the UI — the Orchestrator is the one
-    // shared system Agent every Job drafts through; deleting it breaks
-    // drafting until it's lazily recreated.
-    if (service.getAgent(id).name === ORCHESTRATOR_AGENT_NAME) {
-      throw new HttpError(403, "The Orchestrator Agent is required for Job drafting and can't be deleted");
+    // Refused here, not just hidden in the UI — deleting a chat mid-use would
+    // orphan whatever Job it's still in the middle of planning.
+    if (service.getAgent(id).kind === "orchestrator") {
+      throw new HttpError(403, "Chats can't be deleted");
     }
     return service.deleteAgent(id);
+  });
+
+  app.post("/api/agents/:id/draft-plan", async (request) => {
+    const { id } = agentIdParams.parse(request.params);
+    const agent = service.getAgent(id);
+    if (agent.kind !== "orchestrator") {
+      throw new HttpError(400, "Only a chat can draft a plan");
+    }
+    // The live candidate list, read server-side — never trust a client-supplied
+    // one, since it's what the drafted cast actually gets validated against.
+    const candidates = service
+      .listAgents()
+      .filter((candidate) => candidate.kind !== "orchestrator")
+      .map((candidate) => ({ id: candidate.id, name: candidate.name, capabilitySummary: candidate.capabilitySummary }));
+    const triggerMessage = buildDraftTriggerMessage(candidates);
+    const result = await service.sendMessage(id, triggerMessage);
+    return { run: result.run, message: result.message };
   });
 
   app.post("/api/agents/:id/start", async (request) => {

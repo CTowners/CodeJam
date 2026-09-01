@@ -82,12 +82,12 @@ describe("HTTP boundary", () => {
     await app.close();
   });
 
-  it("refuses to delete the Orchestrator Agent, at the request boundary not just the UI", async () => {
+  it("refuses to delete a chat (kind: orchestrator), at the request boundary not just the UI", async () => {
     let deleteCalled = false;
     const protectedService = {
       listAgents: () => [],
       systemInfo: async () => ({}),
-      getAgent: (id: string) => ({ id, name: "Orchestrator", status: "ready" }),
+      getAgent: (id: string) => ({ id, name: "Planning session", kind: "orchestrator", status: "ready" }),
       deleteAgent: async () => {
         deleteCalled = true;
         return { archivedWorkspace: "/should/never/be/called" };
@@ -101,7 +101,7 @@ describe("HTTP boundary", () => {
     });
 
     expect(response.statusCode).toBe(403);
-    expect(response.json().error).toMatch(/Orchestrator Agent/);
+    expect(response.json().error).toMatch(/Chats can't be deleted/);
     expect(deleteCalled).toBe(false);
     await app.close();
   });
@@ -126,6 +126,81 @@ describe("HTTP boundary", () => {
 
     expect(response.statusCode).toBe(200);
     expect(deleteCalled).toBe(true);
+    await app.close();
+  });
+
+  it("refuses to change a chat's description/instructions via PATCH, but still allows renaming it", async () => {
+    let updateCalled = false;
+    const protectedService = {
+      listAgents: () => [],
+      systemInfo: async () => ({}),
+      getAgent: (id: string) => ({ id, name: "Planning session", kind: "orchestrator", status: "ready" }),
+      updateAgent: async (_id: string, input: unknown) => {
+        updateCalled = true;
+        return { id: _id, ...(input as object) };
+      },
+    } as unknown as AgentService;
+
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), protectedService, jobService);
+
+    const blocked = await app.inject({
+      method: "PATCH",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000",
+      payload: { instructions: "do something else" },
+    });
+    expect(blocked.statusCode).toBe(403);
+    expect(updateCalled).toBe(false);
+
+    const renamed = await app.inject({
+      method: "PATCH",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000",
+      payload: { name: "Renamed chat" },
+    });
+    expect(renamed.statusCode).toBe(200);
+    expect(updateCalled).toBe(true);
+    await app.close();
+  });
+
+  it("only lets a chat (kind: orchestrator) draft a plan, and sends the trigger message through sendMessage", async () => {
+    let sentPrompt: string | undefined;
+    const chatService = {
+      listAgents: () => [
+        { id: "impl-1", name: "Implementer", kind: undefined, capabilitySummary: "writes code" },
+      ],
+      systemInfo: async () => ({}),
+      getAgent: (id: string) => ({ id, name: "Planning session", kind: "orchestrator", status: "ready" }),
+      sendMessage: async (_id: string, prompt: string) => {
+        sentPrompt = prompt;
+        return { run: { id: "run-1" }, message: { id: "msg-1", content: prompt } };
+      },
+    } as unknown as AgentService;
+
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), chatService, jobService);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000/draft-plan",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(sentPrompt).toMatch(/\[\[DRAFT_PLAN\]\]/);
+    expect(sentPrompt).toMatch(/Implementer/);
+    await app.close();
+  });
+
+  it("refuses to draft a plan against an ordinary Agent", async () => {
+    const ordinaryService = {
+      listAgents: () => [],
+      systemInfo: async () => ({}),
+      getAgent: (id: string) => ({ id, name: "Implementer", status: "ready" }),
+    } as unknown as AgentService;
+
+    const app = await createApp(loadConfig({ NODE_ENV: "test" }), ordinaryService, jobService);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/agents/00000000-0000-0000-0000-000000000000/draft-plan",
+    });
+
+    expect(response.statusCode).toBe(400);
     await app.close();
   });
 });

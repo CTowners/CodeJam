@@ -2,8 +2,8 @@ import type {
   Agent,
   AgentRun,
   CoordinationEvent,
+  DraftedPlan,
   Job,
-  JobDraft,
   JobMessage,
   Message,
   SystemInfo,
@@ -47,8 +47,9 @@ export const api = {
   listAgents: () => request<{ agents: Agent[] }>("/api/agents"),
   createAgent: (body: {
     name: string;
-    description: string;
-    instructions: string;
+    description?: string;
+    instructions?: string;
+    kind?: "orchestrator";
   }) =>
     request<{ agent: Agent }>("/api/agents", {
       method: "POST",
@@ -87,15 +88,14 @@ export const api = {
       },
     ),
   run: (id: string) => request<{ run: AgentRun }>("/api/runs/" + id),
-  draftJob: (body: { name?: string; task: string }) =>
-    request<JobDraft>("/api/jobs/draft", {
+  draftPlan: (agentId: string) =>
+    request<{ run: AgentRun; message: Message }>("/api/agents/" + agentId + "/draft-plan", {
+      method: "POST",
+    }),
+  approvePlan: (body: { name: string; task: string; draft: DraftedPlan }) =>
+    request<{ job: Job }>("/api/jobs/approve", {
       method: "POST",
       body: JSON.stringify(body),
-    }),
-  getDraft: (draftId: string) => request<JobDraft>("/api/jobs/drafts/" + draftId),
-  approveDraft: (draftId: string) =>
-    request<{ job: Job }>("/api/jobs/drafts/" + draftId + "/approve", {
-      method: "POST",
     }),
   listJobs: () => request<{ jobs: Job[] }>("/api/jobs"),
   getJob: (id: string) => request<{ job: Job }>("/api/jobs/" + id),

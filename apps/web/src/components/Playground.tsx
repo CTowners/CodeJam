@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import type { Agent, AgentRun, Message, SystemInfo } from "../types";
+import type { Agent, AgentRun, DraftedPlan, Message, SystemInfo } from "../types";
 import { formatTime } from "../lib/format";
+import { classifyReply, isDraftTriggerMessage, isOrchestratorAgent } from "../lib/orchestrator";
+import { PlanCard } from "./PlanCard";
 import { Spinner } from "./Spinner";
 
 const starterPrompts = [
@@ -11,19 +13,31 @@ const starterPrompts = [
 
 export function Playground({
   agent,
+  agents,
   system,
   messages,
   activeRun,
   onSend,
+  onDraftPlan,
+  drafting,
+  onApprovePlan,
+  approvingPlanFor,
 }: {
   agent: Agent;
+  agents: Agent[];
   system: SystemInfo | null;
   messages: Message[];
   activeRun: AgentRun | null;
   onSend: (content: string) => void;
+  onDraftPlan: () => void;
+  drafting: boolean;
+  onApprovePlan: (draft: DraftedPlan, messageId: string) => void;
+  /** The message id of the plan card currently being approved, if any. */
+  approvingPlanFor: string | null;
 }) {
   const [prompt, setPrompt] = useState("");
   const messageEnd = useRef<HTMLDivElement>(null);
+  const isChat = isOrchestratorAgent(agent);
 
   useEffect(() => {
     messageEnd.current?.scrollIntoView({ behavior: "smooth" });
@@ -40,59 +54,109 @@ export function Playground({
     onSend(content);
   };
 
+  const visibleMessages = messages.filter((message) => !isDraftTriggerMessage(message.content));
+
   return (
     <section className="playground">
       <div className="playground-topbar">
         <div>
-          <span className="eyebrow">Playground</span>
-          <h2>Build something with your Agent</h2>
+          <span className="eyebrow">{isChat ? "Chat" : "Playground"}</span>
+          <h2>{isChat ? "Plan a Job with " + agent.name : "Build something with your Agent"}</h2>
         </div>
-        <div className="session-info">
-          <span className="pulse" />
-          {agent.codexThreadId ? "Session connected" : "New session"}
+        <div className="playground-topbar-actions">
+          {isChat && (
+            <button
+              className="button button-primary"
+              onClick={onDraftPlan}
+              disabled={disabled || drafting}
+            >
+              {drafting ? "Drafting…" : "Draft the plan"}
+            </button>
+          )}
+          <div className="session-info">
+            <span className="pulse" />
+            {agent.codexThreadId ? "Session connected" : "New session"}
+          </div>
         </div>
       </div>
 
       <div className="messages">
-        {messages.length === 0 && !activeRun ? (
+        {visibleMessages.length === 0 && !activeRun ? (
           <div className="welcome">
             <div className="welcome-orbit">
               <div>⌁</div>
             </div>
-            <h3>What should {agent.name} build?</h3>
+            <h3>{isChat ? "What should this Job accomplish?" : "What should " + agent.name + " build?"}</h3>
             <p>
-              The Agent can inspect files, write code, run commands, and continue the same
-              Codex session across messages.
+              {isChat
+                ? "Describe the task, ask questions, and refine it together. When you're ready, click " +
+                  "“Draft the plan” to see an ordered Plan and proposed cast — nothing runs until you approve it."
+                : "The Agent can inspect files, write code, run commands, and continue the same " +
+                  "Codex session across messages."}
             </p>
-            <div className="prompt-grid">
-              {starterPrompts.map((item) => (
-                <button key={item} onClick={() => setPrompt(item)}>
-                  <span>↗</span>
-                  {item}
-                </button>
-              ))}
-            </div>
+            {!isChat && (
+              <div className="prompt-grid">
+                {starterPrompts.map((item) => (
+                  <button key={item} onClick={() => setPrompt(item)}>
+                    <span>↗</span>
+                    {item}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         ) : (
-          messages.map((message) => (
-            <article className={"message message-" + message.role} key={message.id}>
-              <div className="message-meta">
-                <strong>{message.role === "user" ? "You" : agent.name}</strong>
-                <span>{formatTime(message.createdAt)}</span>
-              </div>
-              <div className="message-body">{message.content}</div>
-            </article>
-          ))
+          visibleMessages.map((message) => {
+            if (message.role === "user") {
+              return (
+                <article className="message message-user" key={message.id}>
+                  <div className="message-meta">
+                    <strong>You</strong>
+                    <span>{formatTime(message.createdAt)}</span>
+                  </div>
+                  <div className="message-body">{message.content}</div>
+                </article>
+              );
+            }
+
+            // The one gate: an assistant reply is only ever shown as raw text
+            // when it does not parse as JSON at all. Anything JSON-shaped is
+            // either a Plan Card or a clean notice — never the raw text.
+            const parsed = classifyReply(message.content);
+            return (
+              <article className="message message-assistant" key={message.id}>
+                <div className="message-meta">
+                  <strong>{agent.name}</strong>
+                  <span>{formatTime(message.createdAt)}</span>
+                </div>
+                {parsed.kind === "text" && <div className="message-body">{message.content}</div>}
+                {parsed.kind === "plan" && (
+                  <PlanCard
+                    draft={parsed.draft}
+                    agents={agents}
+                    approving={approvingPlanFor === message.id}
+                    onApprove={() => onApprovePlan(parsed.draft, message.id)}
+                  />
+                )}
+                {parsed.kind === "invalid-plan-attempt" && (
+                  <div className="plan-card plan-card-invalid">
+                    <strong>The drafted plan wasn't in the expected shape.</strong>
+                    <p>Ask {agent.name} to fix it, or describe the task differently and try again.</p>
+                  </div>
+                )}
+              </article>
+            );
+          })
         )}
         {running && (
           <article className="message message-assistant thinking">
             <div className="message-meta">
               <strong>{agent.name}</strong>
-              <span>working in the Agent workspace</span>
+              <span>{isChat ? "thinking" : "working in the Agent workspace"}</span>
             </div>
             <div className="thinking-row">
               <Spinner />
-              Codex is reading, editing, or running commands…
+              {isChat ? "Thinking…" : "Codex is reading, editing, or running commands…"}
             </div>
           </article>
         )}
@@ -118,7 +182,9 @@ export function Playground({
           placeholder={
             agent.status === "stopped"
               ? "Start this Agent to continue…"
-              : "Describe what you want the Agent to do…"
+              : isChat
+                ? "Describe the task, or give feedback on the plan…"
+                : "Describe what you want the Agent to do…"
           }
           disabled={disabled}
           rows={3}

@@ -1,46 +1,31 @@
-import type { Agent, JobDraft } from "../../types";
+import type { Agent, DraftedPlan } from "../types";
 
-export function DraftReview({
+/** An assistant reply that parsed as a valid drafted Plan — rendered inline instead of raw JSON. */
+export function PlanCard({
   draft,
   agents,
-  busy,
+  approving,
   onApprove,
-  onDiscard,
 }: {
-  draft: JobDraft;
+  draft: DraftedPlan;
   agents: Agent[];
-  busy: boolean;
+  approving: boolean;
   onApprove: () => void;
-  onDiscard: () => void;
 }) {
   const agentName = (id: string): string => agents.find((agent) => agent.id === id)?.name ?? id;
 
   return (
-    <div className="draft-review">
-      <div className="draft-review-header">
-        <div>
-          <span className="eyebrow">Drafted Plan</span>
-          <h2>{draft.name}</h2>
-        </div>
-        <div className="draft-review-actions">
-          <button className="button button-ghost" onClick={onDiscard} disabled={busy}>
-            Discard
-          </button>
-          <button className="button button-primary" onClick={onApprove} disabled={busy}>
-            {busy ? "Approving…" : "Approve & Run"}
-          </button>
-        </div>
+    <div className="plan-card">
+      <div className="plan-card-header">
+        <span className="eyebrow">Drafted Plan</span>
+        <button className="button button-primary" onClick={onApprove} disabled={approving}>
+          {approving ? "Approving…" : "Approve & Run"}
+        </button>
       </div>
 
-      <p className="draft-review-hint">
-        Approving runs the whole Plan below — nothing executes until you do. Reassigning a Step or
-        revising the Plan by chat isn't wired up yet in this build; discard and redraft with a
-        clarified task instead.
-      </p>
-
       <ol className="plan-steps">
-        {draft.draft.plan.steps.map((step) => {
-          const proposal = draft.draft.castByRole[step.role];
+        {draft.plan.steps.map((step) => {
+          const proposal = draft.castByRole[step.role];
           return (
             <li key={step.id} className="plan-step">
               <div className="plan-step-role">
@@ -61,9 +46,7 @@ export function DraftReview({
                 </div>
               )}
               {proposal?.kind === "new" && (
-                <p className="plan-step-new-instructions">
-                  New Agent instructions: {proposal.instructions}
-                </p>
+                <p className="plan-step-new-instructions">New Agent instructions: {proposal.instructions}</p>
               )}
             </li>
           );
