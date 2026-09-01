@@ -36,36 +36,84 @@ function stripCodeFence(raw: string): string {
   return fenced ? fenced[1]! : trimmed;
 }
 
+/**
+ * Index of the `}` that closes the `{` at `start`, respecting string
+ * literals (so a `}` inside a quoted instruction doesn't end the object
+ * early) — or -1 if the braces never balance before the text ends. Used to
+ * find a JSON object embedded anywhere in a reply, not just one that
+ * happens to be the entire message.
+ */
+function findMatchingBraceEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
 export type ParsedReply =
-  | { kind: "plan"; draft: DraftedPlan }
+  | { kind: "plan"; draft: DraftedPlan; before: string; after: string }
   | { kind: "invalid-plan-attempt" }
   | { kind: "text" };
 
 /**
  * Classifies an assistant reply for rendering — the one place that decides
- * whether raw model text could ever reach the screen unmediated. A reply is
- * only ever "text" (shown as-is) when it does NOT parse as JSON at all;
- * anything that parses as JSON is either a valid plan card or a clean
- * "invalid-plan-attempt" notice — its raw content is never rendered.
+ * whether raw model text could ever reach the screen unmediated. The model
+ * is told to reply with ONLY JSON once it's ready to draft, but doesn't
+ * always comply — it sometimes wraps the JSON in a sentence or two of prose
+ * ("Here's the plan: {...}"). This scans for a balanced {...} block anywhere
+ * in the reply, not just one that happens to be the whole message, so that
+ * case still renders as a Plan Card (with the surrounding prose kept as
+ * ordinary text) instead of dumping the raw JSON onto the screen.
  */
 export function classifyReply(content: string): ParsedReply {
-  const candidate = stripCodeFence(content);
-  // Cheap pre-check: plain conversational text almost never starts with `{` —
-  // avoids paying JSON.parse's cost (and its risk of matching something that
-  // merely happens to be valid JSON, e.g. a lone number) on the common path.
-  if (!candidate.startsWith("{")) {
+  const stripped = stripCodeFence(content);
+  const start = stripped.indexOf("{");
+  if (start === -1) {
     return { kind: "text" };
   }
+  const end = findMatchingBraceEnd(stripped, start);
+  if (end === -1) {
+    // An unbalanced `{` is almost always incidental punctuation in prose
+    // ("a config like { name: ..."), not an attempted JSON object — showing
+    // the surrounding text as-is is the safe default here.
+    return { kind: "text" };
+  }
+  const candidate = stripped.slice(start, end + 1);
   let parsed: unknown;
   try {
     parsed = JSON.parse(candidate);
   } catch {
-    return { kind: "text" };
+    // A balanced {...} block that still fails to parse is very unlikely to
+    // be incidental — treat it as a genuine broken drafting attempt rather
+    // than ever showing that raw, malformed JSON to the user.
+    return { kind: "invalid-plan-attempt" };
   }
   if (looksLikeDraftedPlan(parsed)) {
-    return { kind: "plan", draft: parsed };
+    return {
+      kind: "plan",
+      draft: parsed,
+      before: stripped.slice(0, start).trim(),
+      after: stripped.slice(end + 1).trim(),
+    };
   }
-  return { kind: "invalid-plan-attempt" };
+  // Balanced, valid JSON, but not plan-shaped — most likely an incidental
+  // example inside a conversational reply, not a drafting attempt.
+  return { kind: "text" };
 }
 
 export type ChatPhase = "starting" | "discussing" | "thinking" | "plan-ready";

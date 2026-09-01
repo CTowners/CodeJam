@@ -122,7 +122,13 @@ export function Playground({
                   <span>{formatTime(message.createdAt)}</span>
                 </div>
                 {parsed.kind === "text" && <div className="message-body">{message.content}</div>}
-                {parsed.kind === "plan" && <PlanCard draft={parsed.draft} agents={agents} />}
+                {parsed.kind === "plan" && (
+                  <>
+                    {parsed.before && <div className="message-body">{parsed.before}</div>}
+                    <PlanCard draft={parsed.draft} agents={agents} />
+                    {parsed.after && <div className="message-body">{parsed.after}</div>}
+                  </>
+                )}
                 {parsed.kind === "invalid-plan-attempt" && (
                   <div className="plan-card plan-card-invalid">
                     <strong>The drafted plan wasn't in the expected shape.</strong>

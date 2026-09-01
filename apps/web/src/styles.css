@@ -933,6 +933,14 @@ textarea:focus {
   border-left: 2px solid #8a76e7;
 }
 
+/* A reply that mixes prose with a plan JSON block renders as text + card +
+   text (see lib/orchestrator.ts's classifyReply) — space them apart so the
+   card doesn't sit flush against surrounding text. */
+.message-assistant .message-body + .plan-card,
+.message-assistant .plan-card + .message-body {
+  margin-top: 10px;
+}
+
 .thinking {
   opacity: 0.82;
 }
