@@ -12,7 +12,8 @@ import { Orchestrator } from "./orchestrator/orchestrator.js";
 import type { JsonStore } from "./store.js";
 import type { Database } from "./types.js";
 
-const ORCHESTRATOR_AGENT_NAME = "Orchestrator";
+/** Exported so app.ts can refuse to delete this Agent at the request boundary, not just in the UI. */
+export const ORCHESTRATOR_AGENT_NAME = "Orchestrator";
 const ORCHESTRATOR_INSTRUCTIONS = [
   "You draft Plans for the Coordinator to execute — you never touch files or run",
   "code yourself. Given a task and a list of candidate Agents (each with an id,",

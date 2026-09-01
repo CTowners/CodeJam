@@ -1,4 +1,5 @@
 import type { Agent } from "../types";
+import { isOrchestratorAgent } from "../lib/orchestrator";
 import { StatusPill } from "./StatusPill";
 
 export function AgentHeader({
@@ -14,6 +15,8 @@ export function AgentHeader({
   onToggleAgent: () => void;
   onDelete: () => void;
 }) {
+  const isSystem = isOrchestratorAgent(agent);
+
   return (
     <header className="agent-header">
       <div>
@@ -21,7 +24,11 @@ export function AgentHeader({
           <h1>{agent.name}</h1>
           <StatusPill status={agent.status} />
         </div>
-        <p>{agent.description || "A Codex coding Agent in an isolated workspace."}</p>
+        <p>
+          {isSystem
+            ? "System Agent that drafts Plans for Jobs. Created automatically."
+            : agent.description || "A Codex coding Agent in an isolated workspace."}
+        </p>
       </div>
       <div className="header-actions">
         <button
@@ -34,13 +41,15 @@ export function AgentHeader({
         <button className="button button-ghost" onClick={onToggleAgent} disabled={busy}>
           {agent.status === "stopped" ? "Start" : "Stop"}
         </button>
-        <button
-          className="button button-danger"
-          onClick={onDelete}
-          disabled={busy || agent.status === "busy"}
-        >
-          Delete
-        </button>
+        {!isSystem && (
+          <button
+            className="button button-danger"
+            onClick={onDelete}
+            disabled={busy || agent.status === "busy"}
+          >
+            Delete
+          </button>
+        )}
       </div>
     </header>
   );

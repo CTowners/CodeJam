@@ -8,6 +8,7 @@ import type { AppConfig } from "./config.js";
 import { HttpError } from "./errors.js";
 import type { AgentService } from "./agent-service.js";
 import { jobRoutes } from "./job-routes.js";
+import { ORCHESTRATOR_AGENT_NAME } from "./job-service.js";
 import type { JobService } from "./job-service.js";
 
 const agentIdParams = z.object({ id: z.string().uuid() });
@@ -128,6 +129,12 @@ export async function createApp(
 
   app.delete("/api/agents/:id", async (request) => {
     const { id } = agentIdParams.parse(request.params);
+    // Refused here, not just hidden in the UI — the Orchestrator is the one
+    // shared system Agent every Job drafts through; deleting it breaks
+    // drafting until it's lazily recreated.
+    if (service.getAgent(id).name === ORCHESTRATOR_AGENT_NAME) {
+      throw new HttpError(403, "The Orchestrator Agent is required for Job drafting and can't be deleted");
+    }
     return service.deleteAgent(id);
   });
 
